@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-13.12"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-14.1"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -1385,7 +1385,7 @@ PAGE = r"""<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
      font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
-.wrap{max-width:860px;margin:0 auto;padding:32px 20px 64px}
+.wrap{max-width:880px;margin:0 auto;padding:32px 20px 64px}
 
 header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
        padding-bottom:14px;border-bottom:2px solid var(--ink)}
@@ -1395,28 +1395,31 @@ h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.02em}
        padding:2px 7px;text-transform:uppercase}
 .ver{margin-left:auto;font-family:var(--mono);font-size:12px;color:#fff;
      background:var(--ink);padding:3px 9px;border-radius:2px;letter-spacing:.02em}
+button.quit{padding:4px 12px;font-size:12px;font-weight:600;background:transparent;
+            color:var(--warn);border:1px solid var(--warn);align-self:center}
+button.quit:hover{background:#F7ECE6}
 .sub{color:var(--muted);font-size:13px;margin:10px 0 26px}
 
 section{background:var(--surface);border:1px solid var(--rule);border-radius:3px;
         padding:18px 20px;margin-bottom:16px}
 .lab{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--muted);
      text-transform:uppercase;margin:0 0 12px}
-
-ul.files{list-style:none;margin:0;padding:0;max-height:210px;overflow:auto}
-ul.files li{display:flex;align-items:center;gap:12px;padding:7px 9px;
-            border-radius:2px;cursor:pointer;border:1px solid transparent}
-ul.files li:hover{background:var(--signal-soft)}
-ul.files li[aria-selected="true"]{border-color:var(--signal);background:var(--signal-soft)}
-ul.files .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-ul.files .dur{font-family:var(--mono);font-size:13px;color:var(--muted)}
-.empty{color:var(--muted);font-size:13px;padding:10px 0;line-height:1.7}
-.empty code{font-family:var(--mono);background:var(--ground);padding:2px 5px;border-radius:2px}
 .head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .head .lab{margin-bottom:0}
-.dir{font-family:var(--mono);font-size:12px;color:var(--signal);margin:8px 0 12px;
+
+ul.files{list-style:none;margin:12px 0 0;padding:0;max-height:220px;overflow:auto}
+ul.files li{display:flex;align-items:center;gap:10px;padding:6px 8px;
+            border-radius:2px;border:1px solid transparent}
+ul.files li:hover{background:var(--signal-soft)}
+ul.files li.on{border-color:var(--signal);background:var(--signal-soft)}
+ul.files .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ul.files .dur,ul.files .sz{font-family:var(--mono);font-size:13px;color:var(--muted)}
+.empty{color:var(--muted);font-size:13px;padding:10px 0;line-height:1.7}
+.empty code{font-family:var(--mono);background:var(--ground);padding:2px 5px;border-radius:2px}
+.dir{font-family:var(--mono);font-size:12px;color:var(--signal);margin:8px 0 0;
      word-break:break-all}
 button.mini{padding:4px 11px;font-size:12px;font-weight:500;background:transparent;
-            color:var(--muted);border-color:var(--rule)}
+            color:var(--muted);border:1px solid var(--rule);border-radius:2px}
 button.mini:hover{background:var(--ground);color:var(--ink);border-color:var(--muted)}
 .tag{font-family:var(--mono);font-size:10px;letter-spacing:.05em;color:var(--muted);
      border:1px solid var(--rule);border-radius:2px;padding:1px 5px;flex:none}
@@ -1424,10 +1427,10 @@ button.mini:hover{background:var(--ground);color:var(--ink);border-color:var(--m
 input[type=text],select{font:inherit;color:var(--ink);background:var(--surface);
   border:1px solid var(--rule);border-radius:2px;padding:7px 9px}
 input[type=text]{width:100%;font-family:var(--mono);font-size:13px;margin-top:10px}
-input[type=text]:focus,select:focus,button:focus-visible,ul.files li:focus-visible
-  {outline:2px solid var(--signal);outline-offset:1px}
+input[type=text]:focus,select:focus,button:focus-visible{outline:2px solid var(--signal);outline-offset:1px}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:16px}
 .fld{display:flex;flex-direction:column;gap:5px}
 .fld span{font-size:12px;color:var(--muted)}
 .fld.hot{margin-top:16px}
@@ -1435,6 +1438,13 @@ input[type=text]:focus,select:focus,button:focus-visible,ul.files li:focus-visib
 .fld.hot input{margin-top:4px}
 .checks{display:flex;flex-wrap:wrap;gap:16px;margin-top:16px;font-size:13px}
 .checks label{display:flex;align-items:center;gap:6px;cursor:pointer}
+
+details{margin-top:16px;border-top:1px dashed var(--rule);padding-top:12px}
+summary{cursor:pointer;font-size:13px;color:var(--signal);font-weight:600;
+        list-style:none;user-select:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸ ";font-family:var(--mono)}
+details[open] summary::before{content:"▾ "}
 
 .dia{margin-top:16px;padding:13px 15px;background:var(--ground);
      border:1px solid var(--rule);border-radius:2px;
@@ -1451,11 +1461,13 @@ button{font:inherit;font-weight:600;border-radius:2px;cursor:pointer;
        padding:11px 26px;border:1px solid var(--ink);background:var(--ink);color:#fff}
 button:hover{background:#0b1614}
 button[disabled]{opacity:.4;cursor:not-allowed}
-button.ghost{background:transparent;color:var(--warn);border-color:var(--warn)}
+button.ghost{background:transparent;color:var(--warn);border-color:var(--warn);
+             padding:8px 18px;font-size:13px}
 button.ghost:hover{background:#F7ECE6}
+button.ghost.on{background:var(--warn);color:#fff}
 
 /* 신호판 — 이 앱의 주인공 */
-.meter{display:flex;align-items:flex-end;gap:22px;flex-wrap:wrap;margin-bottom:16px}
+.meter{display:flex;align-items:flex-end;gap:22px;flex-wrap:wrap;margin-bottom:14px}
 .rate{font-family:var(--mono);font-size:52px;font-weight:700;line-height:.95;
       letter-spacing:-.03em;color:var(--signal)}
 .rate small{font-size:16px;font-weight:400;color:var(--muted);margin-left:6px;
@@ -1464,6 +1476,8 @@ button.ghost:hover{background:#F7ECE6}
 .stat{text-align:right}
 .stat b{display:block;font-family:var(--mono);font-size:17px;font-weight:600}
 .stat span{font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.nowfile{margin:0 0 8px;font-size:14px;font-weight:600;overflow:hidden;
+         text-overflow:ellipsis;white-space:nowrap}
 
 /* 시간 눈금이 있는 진행 막대 */
 .track{position:relative;height:34px;background:var(--ground);
@@ -1484,12 +1498,27 @@ button.ghost:hover{background:#F7ECE6}
            border-radius:2px;padding:1px 5px;flex:none;align-self:flex-start;margin-top:2px}
 .tail .spk.s2{background:#7A5C2E} .tail .spk.s3{background:#4A5F8A}
 .tail{margin-top:18px;border-top:1px solid var(--rule);padding-top:14px;
-      max-height:260px;overflow:auto}
+      max-height:220px;overflow:auto}
 .tail p{margin:0 0 5px;display:flex;gap:11px;font-size:14px}
 .tail time{font-family:var(--mono);font-size:12px;color:var(--signal);
            flex:none;padding-top:2px}
-.tail p.new{animation:in .35s ease-out}
-@keyframes in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+.acts{margin:16px 0 0;display:flex;gap:8px}
+
+/* 대기열·기록 목록 */
+ul.list{list-style:none;margin:0;padding:0}
+ul.list li{display:flex;align-items:center;gap:10px;padding:9px 8px;
+           border-bottom:1px solid var(--rule);font-size:14px}
+ul.list li:last-child{border-bottom:none}
+ul.list .no{font-family:var(--mono);font-size:12px;color:var(--muted);
+            min-width:18px;flex:none}
+ul.list .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ul.list .meta{font-family:var(--mono);font-size:12px;color:var(--muted);flex:none}
+ul.list .btns{display:flex;gap:4px;flex:none}
+ul.list .btns button{padding:3px 8px;font-size:12px;font-weight:500;
+                     background:transparent;color:var(--muted);border-color:var(--rule)}
+ul.list .btns button:hover{background:var(--ground);color:var(--ink)}
+li.broken{background:#F9EFE9}
+li.broken .ask{flex-basis:100%;font-size:13px;color:var(--warn);margin:0}
 
 .note{font-size:13px;color:var(--muted);margin-top:12px}
 .err{color:var(--warn);font-size:14px;margin-top:12px;padding:9px 12px;
@@ -1498,6 +1527,20 @@ button.ghost:hover{background:#F7ECE6}
 .out{margin-top:14px;font-family:var(--mono);font-size:13px}
 .out a{color:var(--signal)}
 .hide{display:none}
+
+/* 진단 */
+.dg{font-size:13px}
+.dg h3{font-size:13px;margin:16px 0 6px;font-family:var(--mono);
+       letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.dg table{border-collapse:collapse;width:100%}
+.dg td{padding:4px 8px 4px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+.dg td.k{color:var(--muted);width:150px;white-space:nowrap}
+.dg td.v{font-family:var(--mono);word-break:break-all}
+.dg .yes{color:var(--signal);font-weight:600}
+.dg .no{color:var(--warn);font-weight:600}
+.dg pre{background:var(--ground);border:1px solid var(--rule);border-radius:2px;
+        padding:10px;max-height:280px;overflow:auto;font-family:var(--mono);
+        font-size:11px;line-height:1.5;margin:0;white-space:pre-wrap;word-break:break-all}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body><div class="wrap">
 
@@ -1505,23 +1548,57 @@ button.ghost:hover{background:#F7ECE6}
   <h1>받아쓰기</h1>
   <span class="badge">이 PC에서만 처리 · 비용 없음</span>
   <span class="ver">v__VER__</span>
+  <button class="quit" id="quit" type="button">종료</button>
 </header>
-<p class="sub">음성이 인터넷으로 나가지 않는다. 긴 강의 파일을 끝까지 돌리기 위한 도구다.</p>
+<p class="sub">음성이 인터넷으로 나가지 않는다. 여러 파일을 걸어두고 자리를 떠도 된다.</p>
 
-<div id="setup">
-  <section>
-    <div class="head">
-      <p class="lab">음원 폴더</p>
-      <button class="mini" id="refresh" type="button">새로 고침</button>
+<section id="live" class="hide">
+  <p class="lab">지금 하는 일</p>
+  <p class="nowfile" id="nowfile"></p>
+  <div class="meter">
+    <div><div class="rate" id="rate">—<small>× 실시간</small></div></div>
+    <div class="stats">
+      <div class="stat"><b id="s_left">—</b><span>남은 시간</span></div>
+      <div class="stat"><b id="s_el">—</b><span>경과</span></div>
+      <div class="stat"><b id="s_ch">0</b><span>글자</span></div>
     </div>
-    <p class="dir" id="dir">—</p>
-    <ul class="files" id="files"></ul>
-    <input type="text" id="path" placeholder="목록에 없으면 파일 경로를 붙여넣기">
-  </section>
+  </div>
+  <p class="phase" id="phase"></p>
+  <div class="track"><div class="fill" id="fill"></div><div class="ticks" id="ticks"></div></div>
+  <div class="clock"><em id="c_now">0:00</em><span id="c_pct">0%</span><span id="c_end">—</span></div>
+  <div class="tail" id="tail"></div>
+  <p class="err hide" id="err"></p>
+  <div class="out hide" id="out"></div>
+  <p class="acts">
+    <button class="ghost" id="cancel" type="button">현재 중단</button>
+    <button class="ghost" id="stopall" type="button">전체 중지</button>
+  </p>
+</section>
 
-  <section>
-    <p class="lab">설정</p>
-    <div class="grid">
+<section id="qsec" class="hide">
+  <div class="head"><p class="lab">대기열 (<span id="qn">0</span>)</p></div>
+  <ul class="list" id="qlist"></ul>
+</section>
+
+<section>
+  <div class="head">
+    <p class="lab">담기</p>
+    <button class="mini" id="refresh" type="button">새로 고침</button>
+  </div>
+  <p class="dir" id="dir">—</p>
+  <ul class="files" id="files"></ul>
+  <input type="text" id="path" placeholder="목록에 없으면 파일 경로를 붙여넣기">
+
+  <div class="row">
+    <label class="fld"><span>설정</span><select id="preset"></select></label>
+    <label class="fld"><span>출력 폴더</span><select id="outsel"></select></label>
+  </div>
+  <input type="text" id="outdir" placeholder="출력 폴더 경로">
+  <p class="note" id="outnote"></p>
+
+  <details id="more">
+    <summary>자세히</summary>
+    <div class="grid" style="margin-top:14px">
       <label class="fld"><span>모델</span><select id="model"></select></label>
       <label class="fld"><span>기기</span><select id="device"></select></label>
       <label class="fld"><span>연산 정밀도</span><select id="compute"></select></label>
@@ -1543,7 +1620,6 @@ button.ghost:hover{background:#F7ECE6}
       <label><input type="checkbox" id="prompt"> 말버릇 살리기</label>
       <label><input type="checkbox" id="fixterms" checked> 이름·용어 교정</label>
     </div>
-
     <div class="dia">
       <label class="sw"><input type="checkbox" id="diarize"> <b>화자 분리</b></label>
       <label class="fld inline" id="sens_wrap" hidden><span>전환 민감도</span>
@@ -1562,48 +1638,39 @@ button.ghost:hover{background:#F7ECE6}
       <p class="hint" id="dia_note" hidden>받아쓰기가 끝난 뒤 한 번 더 돌린다.
         음원 길이의 10~30%가 더 걸린다. 아는 인원을 지정하면 정확도가 오른다.</p>
     </div>
-
     <div class="checks">
       <label><input type="checkbox" id="f_plain" checked> 평문 txt</label>
       <label><input type="checkbox" id="f_timed" checked> 시각 포함 txt</label>
       <label><input type="checkbox" id="f_srt"> 자막 srt</label>
       <label><input type="checkbox" id="f_canon"> 정본화 초안 md</label>
     </div>
-    <p class="est" id="est">음원을 고르면 예상 소요 시간을 계산한다.</p>
-  </section>
+  </details>
 
-  <button id="go" disabled>시작</button>
-  <p class="note" id="hint">처음 실행할 때는 모델을 내려받느라 몇 분 걸린다. 한 번만 받는다.</p>
-</div>
+  <p class="est" id="est">음원을 고르면 예상 소요 시간을 계산한다.</p>
+  <p style="margin:16px 0 0"><button id="add" disabled>대기열에 담기</button></p>
+</section>
 
-<div id="live" class="hide">
-  <section>
-    <div class="meter">
-      <div><div class="rate" id="rate">—<small>× 실시간</small></div></div>
-      <div class="stats">
-        <div class="stat"><b id="s_left">—</b><span>남은 시간</span></div>
-        <div class="stat"><b id="s_el">—</b><span>경과</span></div>
-        <div class="stat"><b id="s_ch">0</b><span>글자</span></div>
-      </div>
-    </div>
+<section>
+  <div class="head">
+    <p class="lab">최근 기록</p>
+    <button class="mini" id="diagbtn" type="button">진단</button>
+  </div>
+  <ul class="list" id="hlist"></ul>
+</section>
 
-    <p class="phase" id="phase"></p>
-    <div class="track"><div class="fill" id="fill"></div><div class="ticks" id="ticks"></div></div>
-    <div class="clock"><em id="c_now">0:00</em><span id="c_pct">0%</span><span id="c_end">—</span></div>
-
-    <div class="tail" id="tail"></div>
-    <p class="err hide" id="err"></p>
-    <div class="out hide" id="out"></div>
-    <p style="margin-top:18px"><button class="ghost" id="stop">중단</button>
-       <button id="again" class="hide" style="margin-left:8px">다른 파일 받아쓰기</button></p>
-  </section>
-</div>
+<section id="diagsec" class="hide">
+  <div class="head">
+    <p class="lab">진단</p>
+    <button class="mini" id="diagclose" type="button">닫기</button>
+  </div>
+  <div class="dg" id="dg">확인하는 중…</div>
+</section>
 
 <script>
 const $ = s => document.querySelector(s);
 const MODELS = __MODELS__, DEVICES = __DEVICES__, COMPUTES = __COMPUTES__;
 const SPEED = __SPEED__;
-let picked = null, files = [], lastSeg = 0;
+let files = [], picked = new Set(), lastSeg = 0, settings = null, drewFor = 0;
 
 for (const [id, arr] of [["#model",MODELS],["#device",DEVICES],["#compute",COMPUTES]])
   $(id).innerHTML = arr.map(v => `<option>${v}</option>`).join("");
@@ -1611,15 +1678,48 @@ for (const [id, arr] of [["#model",MODELS],["#device",DEVICES],["#compute",COMPU
 const hms = s => { s=Math.max(0,Math.round(s)); const h=(s/3600)|0,m=((s%3600)/60)|0,x=s%60;
   return h ? `${h}:${String(m).padStart(2,"0")}:${String(x).padStart(2,"0")}`
            : `${m}:${String(x).padStart(2,"0")}`; };
+const esc = t => String(t).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
+const base = p => String(p).split(/[\\/]/).pop();
+const stamp = s => (s||"").replace("T"," ").slice(5,16);
 
-const esc = t => t.replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+/* ── 설정 폼 ── */
+function readOpt(){
+  return {
+    model:$("#model").value, device:$("#device").value, compute:$("#compute").value,
+    lang:$("#lang").value, beam:+$("#beam").value, silence:+$("#silence").value,
+    vad:$("#vad").checked, fallback:$("#fallback").checked, prompt:$("#prompt").checked,
+    fixterms:$("#fixterms").checked, hotwords:$("#hotwords").value,
+    diarize:$("#diarize").checked, nspk:+$("#nspk").value, sens:$("#sens").value,
+    formats:{ plain:$("#f_plain").checked, timed:$("#f_timed").checked,
+              srt:$("#f_srt").checked, canon:$("#f_canon").checked }
+  };
+}
+function writeOpt(o){
+  if(!o) return;
+  const set=(id,v)=>{ const e=$(id); if(e!=null&&v!=null) e.value=v; };
+  const chk=(id,v)=>{ const e=$(id); if(e!=null&&v!=null) e.checked=!!v; };
+  set("#model",o.model); set("#device",o.device); set("#compute",o.compute);
+  set("#lang",o.lang); set("#beam",o.beam); set("#silence",o.silence);
+  chk("#vad",o.vad); chk("#fallback",o.fallback); chk("#prompt",o.prompt);
+  chk("#fixterms",o.fixterms); set("#hotwords",o.hotwords);
+  chk("#diarize",o.diarize); set("#nspk",o.nspk); set("#sens",o.sens);
+  const f=o.formats||{};
+  chk("#f_plain",f.plain); chk("#f_timed",f.timed); chk("#f_srt",f.srt); chk("#f_canon",f.canon);
+  syncDia();
+}
+function syncDia(){
+  const on=$("#diarize").checked;
+  $("#nspk_wrap").hidden=!on; $("#sens_wrap").hidden=!on; $("#dia_note").hidden=!on;
+}
 
+/* ── 담기 ── */
 async function loadFiles(){
   const r = await (await fetch("/files")).json();
-  files = r.files;
+  files = r.files; picked.clear();
   $("#dir").textContent = r.dir;
   $("#files").innerHTML = files.length
-    ? files.map((f,i)=>`<li tabindex="0" data-i="${i}">
+    ? files.map((f,i)=>`<li data-i="${i}">
+        <input type="checkbox" data-i="${i}">
         <span class="nm">${esc(f.name)}</span>
         ${f.done?'<span class="tag">변환됨</span>':''}
         <span class="dur">${f.duration?hms(f.duration):"—"}</span></li>`).join("")
@@ -1628,27 +1728,111 @@ async function loadFiles(){
         : `<li class="empty">폴더가 없다. <code>${esc(r.dir)}</code> 를 만들고 음원을 넣어달라.<br>
              그때까지는 아래에 파일 경로를 직접 붙여넣으면 된다.</li>`);
   document.querySelectorAll("#files li[data-i]").forEach(li=>{
-    const pick = ()=>{ picked = files[+li.dataset.i]; $("#path").value = picked.path;
-      document.querySelectorAll("#files li").forEach(x=>x.setAttribute("aria-selected","false"));
-      li.setAttribute("aria-selected","true"); estimate(); };
-    li.onclick = pick;
-    li.onkeydown = e => { if(e.key==="Enter"||e.key===" "){ e.preventDefault(); pick(); } };
+    const box = li.querySelector("input");
+    const toggle = on => { box.checked=on; on?picked.add(+li.dataset.i):picked.delete(+li.dataset.i);
+      li.classList.toggle("on",on); estimate(); };
+    li.onclick = e => { if(e.target!==box) toggle(!box.checked); };
+    box.onchange = () => toggle(box.checked);
   });
+  estimate();
 }
-
+function chosen(){
+  const typed = $("#path").value.trim();
+  const list = [...picked].map(i=>files[i]);
+  if (typed) list.push({path:typed, duration:0});
+  return list;
+}
 function estimate(){
-  const p = $("#path").value.trim();
-  $("#go").disabled = !p;
-  const d = picked && picked.path === p ? picked.duration : 0;
+  const list = chosen();
+  $("#add").disabled = list.length===0;
+  const total = list.reduce((a,f)=>a+(f.duration||0),0);
   const k = SPEED[$("#model").value + "|" + ($("#device").value==="cuda"?"cuda":"cpu")] || 1;
-  if (!d) { $("#est").innerHTML = "길이를 읽지 못했다. 예상 시간은 시작 후에 실측으로 표시된다."; return; }
-  $("#est").innerHTML = `길이 <b>${hms(d)}</b> · 예상 소요 <b>약 ${hms(d/k)}</b>
+  if(!list.length){ $("#est").textContent="음원을 고르면 예상 소요 시간을 계산한다."; return; }
+  if(!total){ $("#est").innerHTML=`<b>${list.length}개</b> 선택. 길이를 읽지 못했다. 예상 시간은 시작 후 실측으로 나온다.`; return; }
+  $("#est").innerHTML = `<b>${list.length}개</b> · 합계 <b>${hms(total)}</b> · 예상 소요 <b>약 ${hms(total/k)}</b>
     <span style="opacity:.7">(${$("#device").value==="cuda"?"GPU":"CPU"} 기준 어림값)</span>`;
 }
 ["#path","#model","#device"].forEach(id=>$(id).addEventListener("input",estimate));
 
+/* ── 출력 폴더 ── */
+const SAME = "__same__";
+function fillOutdirs(){
+  const rec = (settings.recent_outdirs||[]);
+  $("#outsel").innerHTML = rec.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join("")
+    + `<option value="${SAME}">음원과 같은 폴더</option>`;
+  if(!$("#outdir").value) $("#outdir").value = rec[0] || "";
+}
+$("#outsel").onchange = () => {
+  const v = $("#outsel").value;
+  if(v===SAME){ $("#outdir").value=""; $("#outnote").textContent="음원이 있는 폴더에 저장한다."; }
+  else { $("#outdir").value=v; $("#outnote").textContent=""; }
+};
+
+/* ── 대기열 ── */
+function renderQueue(q){
+  $("#qsec").classList.toggle("hide", q.length===0);
+  $("#qn").textContent = q.length;
+  $("#qlist").innerHTML = q.map((it,i)=>{
+    if(it.state==="interrupted") return `<li class="broken" data-id="${it.id}">
+      <span class="no">${i+1}</span><span class="nm">${esc(it.name)}</span>
+      <span class="meta">중단됨</span>
+      <p class="ask">중단된 작업이다. 다시 할까? 이미 만들어진 파일을 어떻게 할지 고른다.
+        <button class="mini" data-act="keep">보존하고 다시</button>
+        <button class="mini" data-act="over">덮어쓰고 다시</button>
+        <button class="mini" data-act="del">빼기</button></p></li>`;
+    const s = it.settings||{};
+    const tag = (s.diarize?`화자 ${s.nspk||"자동"}`:"화자분리 끔");
+    return `<li data-id="${it.id}">
+      <span class="no">${i+1}</span><span class="nm">${esc(it.name)}</span>
+      <span class="meta">${it.state==="running"?"진행 중":"대기"} · ${esc(tag)}</span>
+      <span class="btns">
+        <button data-act="up" ${it.state==="running"?"disabled":""}>▲</button>
+        <button data-act="down" ${it.state==="running"?"disabled":""}>▼</button>
+        <button data-act="del" ${it.state==="running"?"disabled":""}>✕</button>
+      </span></li>`;
+  }).join("");
+}
+$("#qlist").onclick = async e => {
+  const b = e.target.closest("button"); if(!b) return;
+  const id = e.target.closest("li").dataset.id, act = b.dataset.act;
+  if(act==="up") await post("/queue/move",{id,dir:-1});
+  else if(act==="down") await post("/queue/move",{id,dir:1});
+  else if(act==="del") await post("/queue/remove",{id});
+  else if(act==="keep") await post("/queue/resume",{id,mode:"keep"});
+  else if(act==="over") await post("/queue/resume",{id,mode:"overwrite"});
+  poll();
+};
+
+/* ── 기록 ── */
+function renderHistory(h){
+  $("#hlist").innerHTML = h.length ? h.map(r=>`<li data-id="${r.id}">
+      <span class="nm">${esc(r.name)}</span>
+      <span class="meta">${stamp(r.finished)} · ${hms(r.duration)} · ${(r.speed||0).toFixed(1)}×
+        ${r.speakers?` · 화자 ${r.speakers}명`:""}${r.state!=="done"?` · ${esc(r.state)}`:""}</span>
+      <span class="btns">
+        <button data-act="open" ${r.outputs&&r.outputs.length?"":"disabled"}>열기</button>
+        <button data-act="again">같은 설정으로</button>
+        <button data-act="del">삭제</button>
+      </span></li>`).join("")
+    : `<li class="empty">아직 기록이 없다.</li>`;
+}
+$("#hlist").onclick = async e => {
+  const b = e.target.closest("button"); if(!b) return;
+  const id = e.target.closest("li").dataset.id, act = b.dataset.act;
+  const rec = (window._hist||[]).find(x=>x.id===id); if(!rec) return;
+  if(act==="open"){ rec.outputs.forEach(p=>window.open("/open?p="+encodeURIComponent(p),"_blank")); return; }
+  if(act==="del"){ await post("/history/remove",{id}); poll(); return; }
+  if(act==="again"){
+    writeOpt(rec.settings);
+    const r = await post("/history/again",{id});
+    if(r.error) alert(r.error); else poll();
+  }
+};
+
+/* ── 진행 ── */
 function drawTicks(dur){
-  if(!dur) return;
+  if(!dur || drewFor===dur) return;
+  drewFor = dur;
   const step = dur > 5400 ? 1800 : dur > 1200 ? 600 : 60;
   let h = "";
   for (let t = step; t < dur; t += step){
@@ -1658,90 +1842,175 @@ function drawTicks(dur){
   }
   $("#ticks").innerHTML = h;
 }
+function renderJob(j, hasQueue){
+  const busy = ["loading","running","diarizing","merging"].includes(j.state);
+  $("#live").classList.toggle("hide", !busy && !hasQueue && j.state==="idle");
+  if(j.state==="idle" && !hasQueue) return;
+  const pct = j.duration ? Math.min(100, j.processed/j.duration*100) : 0;
+  $("#nowfile").textContent = j.stem ? base(j.file) : "";
+  $("#rate").innerHTML = (j.speed ? j.speed.toFixed(1) : "—") + "<small>× 실시간</small>";
+  $("#s_left").textContent = j.state==="running" && j.eta ? hms(j.eta) : "—";
+  $("#s_el").textContent = hms(j.elapsed);
+  $("#s_ch").textContent = (j.chars||0).toLocaleString();
+  $("#fill").style.width = pct + "%";
+  $("#c_now").textContent = hms(j.processed);
+  $("#c_pct").textContent = pct.toFixed(1) + "%";
+  $("#c_end").textContent = j.duration ? hms(j.duration) : "길이 미상";
+  drawTicks(j.duration);
 
-$("#go").onclick = async () => {
-  const body = {
-    path: $("#path").value.trim(),
-    model: $("#model").value, device: $("#device").value, compute: $("#compute").value,
-    lang: $("#lang").value, beam: +$("#beam").value, silence: +$("#silence").value,
-    vad: $("#vad").checked, fallback: $("#fallback").checked, prompt: $("#prompt").checked,
-    hotwords: $("#hotwords").value,
-    diarize: $("#diarize").checked, nspk: +$("#nspk").value, sens: $("#sens").value,
-    fixterms: $("#fixterms").checked,
-    formats: { plain:$("#f_plain").checked, timed:$("#f_timed").checked,
-               srt:$("#f_srt").checked, canon:$("#f_canon").checked }
-  };
-  if (!Object.values(body.formats).some(Boolean)){
-    alert("저장 형식을 하나 이상 골라달라."); return; }
-  const r = await (await fetch("/start",{method:"POST",body:JSON.stringify(body)})).json();
-  if (r.error){ alert(r.error); return; }
-  $("#setup").classList.add("hide"); $("#live").classList.remove("hide");
-  lastSeg = 0; poll();
+  let ph = j.phase || "";
+  if (j.state==="diarizing" && j.dia_pct) ph += " " + j.dia_pct.toFixed(0) + "%";
+  if (j.speakers) ph += `  ·  화자 ${j.speakers}명`;
+  if (j.state==="done") ph = j.speakers ? `화자 ${j.speakers}명으로 나눴다` : "끝났다";
+  $("#phase").textContent = ph;
+
+  if (j.tail && j.tail.length){
+    $("#tail").innerHTML = j.tail.map(s=>
+      `<p><time>${s.t}</time>${s.s?`<span class="spk s${s.s}">화자${s.s}</span>`:``}
+         <span>${esc(s.x)}</span></p>`).join("");
+    if (j.segments !== lastSeg){ $("#tail").scrollTop = $("#tail").scrollHeight; lastSeg = j.segments; }
+  }
+  $("#err").classList.toggle("hide", !j.message);
+  if (j.message){ $("#err").textContent = j.message;
+    $("#err").classList.toggle("ok", j.state==="done"); }
+  const outs = j.outputs || [];
+  $("#out").classList.toggle("hide", !(j.state==="done" && outs.length));
+  if (j.state==="done" && outs.length)
+    $("#out").innerHTML = "저장 위치<br>" + outs.map(o=>
+      `<a href="/open?p=${encodeURIComponent(o.path)}" target="_blank">${esc(o.path)}</a>`).join("<br>");
+  $("#cancel").disabled = !busy;
+}
+
+/* ── 폴링 ── */
+async function post(p, b){
+  const r = await fetch(p,{method:"POST",headers:{"Content-Type":"application/json"},
+                          body:JSON.stringify(b||{})});
+  return r.json();
+}
+let timer = null;
+async function poll(){
+  if (timer) { clearTimeout(timer); timer = null; }
+  let s;
+  try { s = await (await fetch("/state")).json(); }
+  catch(e){ $("#phase").textContent = "앱이 종료됐다. 이 창을 닫아도 된다."; return; }
+  const first = settings === null;
+  settings = s.settings;
+  if (first){ writeOpt(settings.last); fillOutdirs(); loadFiles(); }
+  fillPresets();
+  window._hist = s.history;
+  renderJob(s.job, s.queue.length>0);
+  renderQueue(s.queue);
+  renderHistory(s.history);
+  $("#stopall").textContent = s.stopall ? "대기열 재개" : "전체 중지";
+  $("#stopall").classList.toggle("on", s.stopall);
+  const busy = ["loading","running","diarizing","merging"].includes(s.job.state);
+  timer = setTimeout(poll, busy ? 900 : 3000);
+}
+let presetNames = "";
+function fillPresets(){
+  const names = (settings.presets||[]).map(p=>p.name).join("|");
+  if (names === presetNames) return;
+  presetNames = names;
+  $("#preset").innerHTML = `<option value="">직접 정한다</option>` +
+    (settings.presets||[]).map((p,i)=>`<option value="${i}">${esc(p.name)}</option>`).join("");
+}
+$("#preset").onchange = () => {
+  const i = $("#preset").value;
+  if(i==="") return;
+  writeOpt((settings.presets||[])[+i].settings);
+  estimate();
 };
 
-$("#diarize").onchange = async e => {
-  const on = e.target.checked;
-  $("#nspk_wrap").hidden = !on; $("#sens_wrap").hidden = !on; $("#dia_note").hidden = !on;
-  if (!on){ $("#go").disabled = !$("#path").value.trim(); return; }
+/* ── 단추 ── */
+$("#refresh").onclick = () => { $("#path").value=""; loadFiles(); };
+$("#diarize").onchange = async () => {
+  syncDia();
+  if(!$("#diarize").checked) return;
   $("#f_canon").checked = true;
   $("#dia_note").textContent = "확인하는 중…";
   const r = await (await fetch("/diacheck")).json();
   $("#dia_note").textContent = r.why;
   $("#dia_note").classList.toggle("bad", !r.ok);
 };
-$("#refresh").onclick = () => { picked = null; $("#path").value = ""; loadFiles(); estimate(); };
-$("#stop").onclick = () => fetch("/cancel",{method:"POST"});
-$("#again").onclick = () => { $("#live").classList.add("hide");
-  $("#setup").classList.remove("hide"); loadFiles(); };
-
-async function poll(){
-  const j = await (await fetch("/status")).json();
-  const pct = j.duration ? Math.min(100, j.processed/j.duration*100) : 0;
-
-  $("#rate").innerHTML = (j.speed ? j.speed.toFixed(1) : "—") + "<small>× 실시간</small>";
-  $("#s_left").textContent = j.state==="running" && j.eta ? hms(j.eta) : "—";
-  $("#s_el").textContent = hms(j.elapsed);
-  $("#s_ch").textContent = j.chars.toLocaleString();
-  $("#fill").style.width = pct + "%";
-  $("#c_now").textContent = hms(j.processed);
-  $("#c_pct").textContent = pct.toFixed(1) + "%";
-  $("#c_end").textContent = j.duration ? hms(j.duration) : "길이 미상";
-  if (j.duration && !$("#ticks").innerHTML) drawTicks(j.duration);
-
-  $("#phase").textContent = j.phase || "";
-  if (j.state==="diarizing" && j.dia_pct) $("#phase").textContent = j.phase + " " + j.dia_pct.toFixed(0) + "%";
-  if (j.speakers) $("#phase").textContent += `  ·  화자 ${j.speakers}명`;
-
-  if (j.tail.length){
-    $("#tail").innerHTML = j.tail.map((s,i)=>
-      `<p class="${i>=j.tail.length-(j.segments-lastSeg)?"new":""}">
-         <time>${s.t}</time>${s.s?`<span class="spk s${s.s}">화자${s.s}</span>`:``}
-         <span>${esc(s.x)}</span></p>`).join("");
-    $("#tail").scrollTop = $("#tail").scrollHeight;
-    lastSeg = j.segments;
-  }
-
-  if (j.message){
-    $("#err").textContent = j.message;
-    $("#err").classList.remove("hide");
-    $("#err").classList.toggle("ok", j.state === "done" && j.speakers > 0);
-  }
-
-  if (["done","cancelled","error"].includes(j.state)){
-    $("#phase").textContent = j.state==="done"
-      ? (j.speakers ? `화자 ${j.speakers}명으로 나눴다` : "완료 · 화자 분리 없음") : "";
-    $("#stop").classList.add("hide"); $("#again").classList.remove("hide");
-    if (j.outputs.length){
-      $("#out").innerHTML = "저장 위치<br>" +
-        j.outputs.map(o=>`<a href="/open?p=${encodeURIComponent(o.path)}" target="_blank">${o.path}</a>`).join("<br>");
-      $("#out").classList.remove("hide");
+$("#cancel").onclick = () => post("/cancel",{});
+$("#stopall").onclick = async () => {
+  const s = await (await fetch("/state")).json();
+  await post("/queue/stopall",{on:!s.stopall}); poll();
+};
+$("#add").onclick = async () => {
+  const list = chosen();
+  if(!list.length){ alert("음원을 고르지 않았다."); return; }
+  const opt = readOpt();
+  if(!Object.values(opt.formats).some(Boolean)){ alert("저장 형식을 하나 이상 골라달라."); return; }
+  const same = $("#outsel").value===SAME;
+  const paths = list.map(f=>f.path);
+  let r;
+  if(same){
+    r = {ok:true, warn:[]};
+    for(const p of paths){
+      const dir = p.replace(/[\\/][^\\/]*$/,"");
+      const one = await post("/queue/add",{paths:[p],settings:opt,outdir:dir});
+      if(one.error){ r = one; break; }
+      r.warn = r.warn.concat(one.warn||[]);
     }
-    return;
+  } else {
+    r = await post("/queue/add",{paths, settings:opt, outdir:$("#outdir").value.trim()});
   }
-  setTimeout(poll, 900);
-}
+  if(r.error){ alert(r.error); return; }
+  if(r.warn && r.warn.length) alert("같은 이름이 있다. 나중 것이 덮어쓴다.\n\n" + r.warn.join("\n"));
+  $("#path").value=""; picked.clear();
+  document.querySelectorAll("#files li input").forEach(b=>{b.checked=false;b.closest("li").classList.remove("on");});
+  estimate(); poll(); loadFiles();
+};
+$("#quit").onclick = async () => {
+  const s = await (await fetch("/state")).json();
+  const busy = ["loading","running","diarizing","merging"].includes(s.job.state);
+  const left = s.queue.filter(x=>x.state==="waiting"||x.state==="running").length;
+  if((busy||left) && !confirm(`진행 중인 작업이 있습니다. 종료할까요?\n\n남은 항목 ${left}건. 여기까지 받아쓴 내용은 저장돼 있습니다.`)) return;
+  await post("/quit",{});
+  document.body.innerHTML = '<div class="wrap"><header><h1>받아쓰기</h1></header>'
+    + '<p class="sub">종료했다. 이 창을 닫아도 된다.</p></div>';
+};
 
-loadFiles();
+/* ── 진단 ── */
+$("#diagbtn").onclick = async () => {
+  $("#diagsec").classList.remove("hide");
+  $("#diagsec").scrollIntoView({behavior:"smooth"});
+  const d = await (await fetch("/diag")).json();
+  const yn = b => b ? '<span class="yes">있음</span>' : '<span class="no">없음</span>';
+  const rows = [];
+  rows.push(["버전", `v${esc(d.version)} · PID ${d.pid}`]);
+  rows.push(["실행 파일", esc(d.file)]);
+  rows.push(["파이썬", `${esc((d.python||{}).version)} ${(d.python||{}).ok?'<span class="yes">3.10 이상</span>':'<span class="no">3.10 미만</span>'}`]);
+  rows.push(["기기", `${esc((d.device||{}).name)} ${(d.device||{}).cuda?'<span class="yes">GPU 사용</span>':""}`]);
+  let h = `<h3>기본</h3><table>${rows.map(r=>`<tr><td class="k">${r[0]}</td><td class="v">${r[1]}</td></tr>`).join("")}</table>`;
+
+  h += `<h3>패키지</h3><table>` + (d.packages||[]).map(p=>
+    `<tr><td class="k">${esc(p.name)}${p.need?" (필수)":""}</td><td class="v">${
+      p.ok?`<span class="yes">${esc(p.version)}</span>`:'<span class="no">없다</span>'}</td></tr>`).join("") + `</table>`;
+
+  const t = d.token||{};
+  h += `<h3>화자 분리 토큰</h3><table>
+    <tr><td class="k">HF_TOKEN</td><td class="v">${t.ok?`<span class="yes">${esc(t.shown)}</span>`:'<span class="no">없다</span>'}</td></tr>
+    <tr><td class="k">설정 파일</td><td class="v">${esc(t.file||"없다")}</td></tr>
+    <tr><td class="k">읽은 항목</td><td class="v">${esc((t.keys||[]).join(", ")||"없다")}</td></tr></table>`;
+
+  const m = d.models||{};
+  h += `<h3>내려받은 모델</h3><table><tr><td class="k">캐시 폴더</td><td class="v">${esc(m.dir||"")}</td></tr>`
+    + ((m.items||[]).length ? (m.items||[]).map(x=>
+        `<tr><td class="k">${esc(x.name)}</td><td class="v">${esc(x.size)}</td></tr>`).join("")
+      : `<tr><td class="k">—</td><td class="v">아직 없다. 처음 돌릴 때 내려받는다.</td></tr>`) + `</table>`;
+
+  h += `<h3>폴더</h3><table>` + (d.dirs||[]).map(x=>
+    `<tr><td class="k">${esc(x.label)}</td><td class="v">${esc(x.path)} ${yn(x.exists)}</td></tr>`).join("")
+    + `<tr><td class="k">기록</td><td class="v">${esc((d.log||{}).path)} ${yn((d.log||{}).exists)}</td></tr></table>`;
+
+  h += `<h3>최근 기록 200줄</h3><pre>${esc((d.log_lines||[]).join("\n") || "아직 없다.")}</pre>`;
+  $("#dg").innerHTML = h;
+};
+$("#diagclose").onclick = () => $("#diagsec").classList.add("hide");
+
+poll();
 </script></div></body></html>
 """
 
@@ -1749,6 +2018,216 @@ loadFiles();
 # ─────────────────────────────────────────────────────────────
 # 서버
 # ─────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────
+# 진단
+#
+# 설치·환경 문제를 사용자가 스스로 확인한다. 항목마다 try 로 감싼다.
+# 하나가 실패해도 나머지가 보여야 한다.
+# 토큰은 있음·없음과 길이까지다. 값은 어디에도 찍지 않는다.
+# ─────────────────────────────────────────────────────────────
+
+_DIAG = {"t": 0.0, "data": None}
+
+
+def hf_cache_dir() -> str:
+    for k in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        v = os.environ.get(k)
+        if v:
+            return v
+    home = os.environ.get("HF_HOME")
+    if home:
+        return os.path.join(home, "hub")
+    return os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+
+
+def dir_size(path: str) -> int:
+    n = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                n += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return n
+
+
+def human(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024.0
+    return f"{n:.1f}GB"
+
+
+def diagnose(force: bool = False) -> dict:
+    """torch import 가 몇 초 걸린다. 부를 때만 하고 결과를 잠시 쥐고 있는다."""
+    if not force and _DIAG["data"] and time.time() - _DIAG["t"] < 60:
+        return _DIAG["data"]
+
+    d = {"version": APP_VERSION, "pid": os.getpid(), "file": os.path.abspath(__file__)}
+
+    try:
+        d["python"] = {"version": sys.version.split()[0], "exe": sys.executable,
+                       "ok": sys.version_info >= (3, 10)}
+    except Exception as e:
+        d["python"] = {"error": str(e)}
+
+    pkgs = []
+    for name, mod, need in (("faster-whisper", "faster_whisper", True),
+                            ("pyannote.audio", "pyannote.audio", False),
+                            ("torch", "torch", False),
+                            ("av", "av", False)):
+        try:
+            m = __import__(mod)
+            for part in mod.split(".")[1:]:
+                m = getattr(m, part)
+            pkgs.append({"name": name, "ok": True,
+                         "version": getattr(m, "__version__", "?"), "need": need})
+        except Exception:
+            pkgs.append({"name": name, "ok": False, "version": "", "need": need})
+    d["packages"] = pkgs
+
+    try:
+        tok = hf_token()
+        d["token"] = {"ok": bool(tok), "shown": mask(tok),
+                      "file": ENV_INFO["file"], "keys": ENV_INFO["keys"]}
+    except Exception as e:
+        d["token"] = {"error": str(e)}
+
+    try:
+        import torch
+        cuda = bool(torch.cuda.is_available())
+        d["device"] = {"cuda": cuda,
+                       "name": torch.cuda.get_device_name(0) if cuda else "CPU"}
+    except Exception:
+        d["device"] = {"cuda": False, "name": "CPU (torch 없음)"}
+
+    try:
+        root = hf_cache_dir()
+        models = []
+        if os.path.isdir(root):
+            for name in sorted(os.listdir(root)):
+                if not name.startswith("models--"):
+                    continue
+                size = dir_size(os.path.join(root, name))
+                models.append({"name": name.replace("models--", "").replace("--", "/"),
+                               "size": human(size)})
+        d["models"] = {"dir": root, "items": models}
+    except Exception as e:
+        d["models"] = {"dir": "", "items": [], "error": str(e)}
+
+    dirs = []
+    for label, p in (("음원", AUDIODIR), ("기본 출력", OUTDIR), ("설정·기록", DATA)):
+        try:
+            dirs.append({"label": label, "path": p, "exists": os.path.isdir(p)})
+        except Exception as e:
+            dirs.append({"label": label, "path": p, "exists": False, "why": str(e)})
+    d["dirs"] = dirs
+    d["log"] = {"path": LOG_PATH, "exists": os.path.isfile(LOG_PATH)}
+
+    _DIAG.update(t=time.time(), data=d)
+    return d
+
+
+# ─────────────────────────────────────────────────────────────
+# 무창 실행과 바로가기
+#
+# .vbs 규칙 — ANSI 또는 UTF-16LE. 한글을 넣지 않는다. 경로를 박지 않는다.
+# start.vbs 는 순수 ASCII 로 쓰고 자기 위치에서 폴더를 얻는다.
+# 바로가기 이름에는 한글이 불가피하므로 그 도우미만 UTF-16LE 로 쓰고 지운다.
+# ─────────────────────────────────────────────────────────────
+
+START_VBS = (
+    "' Batasseugi launcher. Runs the app with no console window.\n"
+    "' ASCII only, no Korean, no hard-coded paths. See CLAUDE.md for why.\n"
+    "Option Explicit\n"
+    "Dim sh, fso, here\n"
+    'Set sh = CreateObject("WScript.Shell")\n'
+    'Set fso = CreateObject("Scripting.FileSystemObject")\n'
+    "here = fso.GetParentFolderName(WScript.ScriptFullName)\n"
+    "sh.CurrentDirectory = here\n"
+    "On Error Resume Next\n"
+    'sh.Run "pythonw.exe """ & here & "\\app.py""", 0, False\n'
+    "If Err.Number <> 0 Then\n"
+    '  MsgBox "Python was not found. Install Python 3.10 or newer and be sure to '
+    'check Add Python to PATH.", 48, "Batasseugi"\n'
+    "End If\n"
+)
+
+
+def write_start_vbs() -> str:
+    path = os.path.join(BASE, "start.vbs")
+    with open(path, "w", encoding="ascii", newline="\r\n") as f:
+        f.write(START_VBS)
+    return path
+
+
+def desktop_dir() -> str:
+    """OneDrive 로 옮겨진 바탕화면이 흔하다. 레지스트리를 먼저 본다."""
+    try:
+        import winreg
+        key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+            v = winreg.QueryValueEx(k, "Desktop")[0]
+            if v and os.path.isdir(v):
+                return v
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
+
+def make_shortcut(name: str = "받아쓰기") -> dict:
+    """바탕화면 바로가기를 만든다. 실패해도 start.vbs 위치를 알린다."""
+    if os.name != "nt":
+        return {"ok": False, "why": "윈도우에서만 만든다.", "start": ""}
+    start = write_start_vbs()
+    desk = desktop_dir()
+    lnk = os.path.join(desk, name + ".lnk")
+    helper = os.path.join(DATA, "_shortcut.vbs")
+    body = ('Set sh = CreateObject("WScript.Shell")\r\n'
+            f'Set lnk = sh.CreateShortcut("{lnk}")\r\n'
+            f'lnk.TargetPath = "{start}"\r\n'
+            f'lnk.WorkingDirectory = "{BASE}"\r\n'
+            'lnk.Description = "Batasseugi"\r\n'
+            'lnk.Save\r\n')
+    try:
+        os.makedirs(DATA, exist_ok=True)
+        # 한글 경로가 섞이므로 UTF-16LE 로 쓴다. UTF-8 로 쓰면 cscript 가 깨뜨린다.
+        with open(helper, "w", encoding="utf-16") as f:
+            f.write(body)
+        import subprocess
+        r = subprocess.run(["cscript", "//nologo", helper],
+                           capture_output=True, timeout=30)
+        if r.returncode != 0:
+            return {"ok": False, "start": start,
+                    "why": r.stderr.decode("utf-8", "replace")[:200] or "cscript 실패"}
+        return {"ok": os.path.exists(lnk), "path": lnk, "start": start,
+                "why": "" if os.path.exists(lnk) else "바로가기가 만들어지지 않았다."}
+    except Exception as e:
+        return {"ok": False, "start": start, "why": f"{type(e).__name__}: {e}"}
+    finally:
+        try:
+            os.remove(helper)
+        except OSError:
+            pass
+
+
+SRV = None                                 # main() 에서 채운다
+
+
+def shutdown_later() -> None:
+    """응답을 보낸 뒤에 멈춘다. 서비스 스레드에서 shutdown() 을 부르면 잠긴다."""
+    time.sleep(0.3)
+    CANCEL.set()
+    STOP_ALL.set()
+    log("  화면에서 종료를 눌렀다.")
+    try:
+        if SRV is not None:
+            SRV.shutdown()
+    except Exception:
+        pass
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -1798,6 +2277,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if u.path == "/log":
             n = int(urllib.parse.parse_qs(u.query).get("n", ["200"])[0] or 200)
             return self._json({"path": LOG_PATH, "lines": log_tail(min(n, 2000))})
+
+        if u.path == "/diag":
+            q = urllib.parse.parse_qs(u.query)
+            d = diagnose(force=q.get("force", ["0"])[0] == "1")
+            return self._json(dict(d, log_lines=log_tail(200)))
 
         if u.path == "/open":
             p = urllib.parse.parse_qs(u.query).get("p", [""])[0]
@@ -1889,12 +2373,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json({"ok": True})
 
         if u.path == "/history/again":
-            hid = self._body().get("id", "")
+            # 본문은 한 번만 읽는다. 두 번 부르면 rfile 이 비어 영원히 기다린다.
+            b = self._body()
             with STATE_LOCK:
-                rec = next((x for x in HISTORY["items"] if x["id"] == hid), None)
+                rec = next((x for x in HISTORY["items"]
+                            if x["id"] == b.get("id", "")), None)
             if rec is None:
                 return self._json({"error": "기록을 찾지 못했다."})
-            b = self._body()
             settings = dict(rec.get("settings") or DEFAULT_OPT)
             settings.update(b.get("settings") or {})     # 이름·용어를 보태 다시 돌린다
             return self._json(enqueue([rec["path"]], settings,
@@ -1912,6 +2397,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if u.path == "/outdir/check":
             return self._json(check_outdir(self._body().get("path", "")))
+
+        if u.path == "/shortcut":
+            return self._json(make_shortcut())
+
+        if u.path == "/quit":
+            # 먼저 응답하고 다른 스레드에서 멈춘다. 여기서 shutdown() 을 부르면 잠긴다.
+            self._json({"ok": True})
+            threading.Thread(target=shutdown_later, daemon=True).start()
+            return
 
         return self._send(404, b"not found", "text/plain")
 
@@ -2000,21 +2494,24 @@ def selftest() -> int:
 def main() -> None:
     setup_log()
 
+    url = f"http://127.0.0.1:{PORT}"
     busy = port_busy(PORT)
     if busy:
-        log(f"\n  !! {PORT} 포트를 이미 {busy} 가 쓰고 있다.")
-        log(f"     그쪽이 화면에 응답하므로 이 실행은 반영되지 않는다.\n")
-        log(f"     이전 창에서 Ctrl+C 로 끄거나, 명령창에서 다음을 실행해달라.")
-        log(f"       taskkill /F /IM python.exe\n")
-        log(f"     또는 다른 포트로 띄운다.")
-        log(f"       set PORT=8766 && python app.py\n")
+        # 이미 떠 있으면 새로 띄우지 않고 기존 화면을 연다.
+        # 무창 실행에서는 안내문을 볼 수 없으므로 브라우저가 대신 답한다.
+        log(f"\n  !! {PORT} 포트를 이미 {busy} 가 쓰고 있다. 기존 화면을 연다.")
+        log(f"     바꾼 것이 안 보이면 그 화면의 종료 버튼을 누르고 다시 실행해달라.")
+        log(f"     다른 포트로 띄우려면 — set PORT=8766 && python app.py\n")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
         return
 
     load_env()
     os.makedirs(OUTDIR, exist_ok=True)
     load_state()
     threading.Thread(target=queue_loop, daemon=True).start()
-    url = f"http://127.0.0.1:{PORT}"
     log(f"\n  받아쓰기 v{APP_VERSION} — {url}")
     log(f"  음원 폴더 — {AUDIODIR}"
         + ("" if os.path.isdir(AUDIODIR) else "   (없다. 폴더를 만들어 음원을 넣어달라)"))
@@ -2029,26 +2526,39 @@ def main() -> None:
     log(f"  화자 분리 — " + (f"HF_TOKEN 확인 {mask(tok)}" if tok
                             else "HF_TOKEN 없음. 화자 분리를 쓸 수 없다"))
     log(f"  기록 파일 — {LOG_PATH}")
+    log("  바탕화면 바로가기를 만들려면 — python app.py --shortcut")
     with STATE_LOCK:
         n_wait = sum(1 for x in QUEUE["items"] if x.get("state") == "waiting")
         n_int = sum(1 for x in QUEUE["items"] if x.get("state") == "interrupted")
         n_hist = len(HISTORY["items"])
     log(f"  대기열 — 대기 {n_wait}건"
         + (f" · 중단됨 {n_int}건" if n_int else "") + f" · 이력 {n_hist}건")
-    log(f"  종료하려면 이 창에서 Ctrl+C\n")
+    # 무창 실행에는 누를 창이 없다. 그때는 화면 안 종료 버튼뿐이다.
+    log("  종료 — " + ("화면 오른쪽 위 종료 버튼" if not _CONSOLE
+                       else "화면의 종료 버튼 또는 이 창에서 Ctrl+C") + "\n")
     try:
         webbrowser.open(url)
     except Exception:
         pass
+    global SRV
     with Server(("127.0.0.1", PORT), Handler) as srv:
+        SRV = srv
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
             log("  종료했다.\n")
+    SRV = None
     log(f"── 받아쓰기 v{APP_VERSION} 종료")
 
 
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(selftest())
+    if "--shortcut" in sys.argv:
+        setup_log()
+        r = make_shortcut()
+        log(f"  실행 스크립트 — {r.get('start', '')}")
+        log("  바탕화면 바로가기 — " + (r["path"] if r.get("ok")
+                                        else f"만들지 못했다. {r.get('why', '')}"))
+        sys.exit(0 if r.get("ok") else 1)
     main()

@@ -21,7 +21,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 python app.py                      # 앱 실행 → http://127.0.0.1:8765 (브라우저 자동 열림)
 $env:PORT = "8766"; python app.py  # 포트를 바꿔 띄운다
 python app.py --selftest           # fix_terms 16개 사례. 교정 로직을 고쳤으면 먼저 돌린다
+python app.py --shortcut           # start.vbs 와 바탕화면 바로가기를 만든다
+python tests/queue_test.py         # 대기열·이력·설정·캐시 36건
+python tests/screen_test.py        # 화면과 백엔드의 접합면 34건
 ```
+
+**`app.py`를 고쳤으면 세 시험을 다 돌린다.** 음원이 없으면 그 절만 건너뛴다.
 
 회귀 시험 — `app.py`를 고쳤으면 매번 돌린다. **절차와 기준값은 [baseline/README.md](baseline/README.md)에 있다.** R1(정확도)과 R2(구조) 둘이다.
 
@@ -103,16 +108,24 @@ STATE_LOCK 위 셋을 감싼다
 
 ### 화면
 
-`PAGE` 문자열 하나(raw string, [app.py:772](app.py#L772)~)에 HTML·CSS·JS가 다 들어 있다. `do_GET`이 `__VER__` `__MODELS__` `__DEVICES__` `__COMPUTES__` `__SPEED__` 자리표시자를 치환한다. **외부 자원 금지** — CDN·웹폰트·아이콘 폰트를 쓰지 않는다. 오프라인에서 돌아야 한다. **`localStorage`·`sessionStorage` 금지** — 상태는 서버 JSON에 둔다.
+`PAGE` 문자열 하나(raw string)에 HTML·CSS·JS가 다 들어 있다. `do_GET`이 `__VER__` `__MODELS__` `__DEVICES__` `__COMPUTES__` `__SPEED__` 자리표시자를 치환한다. **외부 자원 금지** — CDN·웹폰트·아이콘 폰트를 쓰지 않는다. 오프라인에서 돌아야 한다. **`localStorage`·`sessionStorage` 금지** — 상태는 서버 JSON에 둔다.
 
 CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시각·수치는 고정폭 글꼴, 진행 막대는 백분율이 아니라 음원 시간 눈금을 쓴다. 화면의 주인공은 배속 숫자다.
+
+구역은 넷이다 — 지금 하는 일 · 대기열 · 담기 · 최근 기록. 머리말에 버전 배지와 종료 버튼, 기록 옆에 진단이 붙는다. **폴링은 `/state` 하나다.** 작업 중이면 900ms, 놀고 있으면 3초다.
+
+**폴링이 사용자 입력을 덮지 않게 한다.** 설정 폼은 기동 시 `settings.last`로 한 번만 채우고, 음원 목록은 새로 고침을 눌러야 다시 읽는다. 매번 다시 그리면 고른 체크가 지워진다.
+
+`tests/screen_test.py`가 화면이 부르는 경로와 응답 키를 지킨다. 화면을 고치면 그것부터 돌린다.
 
 ### HTTP
 
 | | 경로 |
 |---|---|
-| GET | `/` `/files` `/diacheck` `/version` `/status` `/log?n=` `/open?p=` `/queue` `/history?n=` `/settings` `/state` |
-| POST | `/start` `/cancel` `/queue/add` `/queue/move` `/queue/remove` `/queue/resume` `/queue/stopall` `/history/remove` `/history/again` `/settings` `/outdir/check` |
+| GET | `/` `/files` `/diacheck` `/diag` `/version` `/status` `/log?n=` `/open?p=` `/queue` `/history?n=` `/settings` `/state` |
+| POST | `/start` `/cancel` `/queue/add` `/queue/move` `/queue/remove` `/queue/resume` `/queue/stopall` `/history/remove` `/history/again` `/settings` `/outdir/check` `/shortcut` `/quit` |
+
+**`self._body()`는 한 번만 부른다.** 두 번 부르면 `rfile`이 비어 있어 요청이 영원히 멈춘다. `/history/again`에서 실제로 겪었다.
 
 **`POST /start`를 없애지 않았다.** 큐에 1건 넣고 곧바로 도는 것으로 속만 바꿨다. 기존 화면의 시작 버튼·`/status` 폴링·중단 버튼이 손대지 않아도 그대로 동작한다. 이것이 1단계에서 회귀를 지킨 방식이다. 다만 작업 중에 눌러도 이제 오류가 아니라 대기열에 쌓인다.
 
@@ -132,9 +145,17 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 
 **`app.py`를 고쳤으면 `APP_VERSION`을 올린다.** 안 올리면 화면이 갱신됐는지 알 수 없다.
 
-## 셸 스크립트 금지
+## 무창 실행
 
-`.ps1`·`.cmd` 래퍼를 새로 만들지 않는다. 실행 정책·LF 줄바꿈·인코딩으로 세 번 막혔다. **파이썬과 `.vbs`만 쓴다.** 무창 실행이 필요하면 `start.vbs`가 `pythonw.exe`를 부른다.
+`.ps1`·`.cmd` 래퍼를 새로 만들지 않는다. 실행 정책·LF 줄바꿈·인코딩으로 세 번 막혔다. **파이썬과 `.vbs`만 쓴다.**
+
+`start.vbs`가 `pythonw.exe`로 창 없이 띄운다. **이 파일은 순수 ASCII다.** 한글을 넣지 않고 경로를 박지 않는다 — BOM 없는 UTF-8로 쓰면 cscript가 ANSI로 읽어 한글 경로에서 깨진다. 자기 위치(`WScript.ScriptFullName`)에서 폴더를 얻는다.
+
+바로가기 이름 `받아쓰기.lnk`에는 한글이 불가피하다. 그 도우미 `.vbs`만 **UTF-16LE**로 쓰고 곧바로 지운다. 바탕화면 경로는 레지스트리에서 읽는다 — OneDrive로 옮겨진 바탕화면이 흔하다.
+
+무창 실행에서는 `sys.stdout`이 `None`이고 `print()`가 조용히 사라진다. `setup_log()`가 물길을 내 스레드 역추적까지 `data/app.log`에 담는다. **로깅이 무창 실행의 선행 조건이다.**
+
+이미 떠 있는데 또 실행하면 새로 띄우지 않고 브라우저로 기존 화면만 연다. 무창 실행에서는 안내문을 볼 수 없기 때문이다.
 
 ## 평가 도구 형식
 
@@ -154,9 +175,9 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 
 보완서가 바꾼 것 — §1-3 비교표는 근거 자료일 뿐 인수 조건이 아니다 · §9-1은 폐기하고 R1·R2로 대체한다 · `stt_bench.py`는 채점 로직만 동결이고 인코딩 수정은 허용한다 · 0단계(기준선 동결)를 맨 앞에 넣는다.
 
-**0단계와 1단계가 끝났다.** `baseline/`에 R1·R2가 동결돼 있고, 무창 실행 로깅(§6-1)·대기열·이력·설정 저장·모델 캐시(§6-2)·중단 작업 처리(§6-3)·잠금 순서(§6-4)·`/open` 허용 목록(§6-5)이 모두 들어갔다.
+**0·1·2·3단계가 끝났다.** 기준선 동결과 로깅, 대기열·이력·설정·모델 캐시, 화면 재구성, 무창 실행·종료·진단까지다. 감리가 2·3단계를 합쳐 진행하도록 정했다.
 
-**2단계(화면 재구성)부터가 남았다.** 화면은 아직 0단계 그대로다 — 파일 하나를 골라 시작하는 단일 작업 화면이고, 대기열·이력·프리셋·출력 폴더 고르개가 화면에 없다. 백엔드는 `/state` 하나로 다 내려줄 준비가 돼 있다. `start.vbs`·`setup.py`·`설치안내.md`도 없다.
+**4단계(`setup.py`·`설치안내.md`)만 남았다.** 지금은 손으로 설치한다 — README의 절차다.
 
 ### `fix_terms()` — 꼬리 우선 분할
 
