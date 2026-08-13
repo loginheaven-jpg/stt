@@ -27,28 +27,21 @@
 
 ## 설치
 
-설치 스크립트(`setup.py`)는 아직 없다. 지금은 손으로 넷을 한다.
+**파이썬 3.10 이상을 깔고 `setup.py`를 더블클릭한다.** 나머지는 화면이 안내한다 — 엔진 설치, 화자 분리 여부, 토큰 입력, 모델 내려받기, 폴더 만들기, 바탕화면 바로가기까지 아홉 단계다.
 
-**하나, 파이썬 3.10 이상을 설치한다.** 윈도우라면 설치 화면의 `Add Python to PATH`를 반드시 체크한다.
+파이썬 설치 화면에서 **`Add Python to PATH`를 반드시 체크한다.** 가장 많이 막히는 곳이다.
 
-**둘, 전사 엔진을 넣는다.**
+명령창을 모르는 사람을 위한 자세한 안내는 [설치안내.md](설치안내.md)에 있다. 스크린샷과 자주 막히는 곳 아홉 가지가 들어 있다.
 
-```powershell
-pip install faster-whisper
-```
-
-**셋, 화자 분리를 쓰려면 두 가지를 더 넣는다.** 약 2.5GB다. 화자를 나눌 필요가 없으면 건너뛴다.
+손으로 하려면 이렇다.
 
 ```powershell
-pip install pyannote.audio torch
+pip install faster-whisper                # 받아쓰기
+pip install pyannote.audio torch          # 화자 분리 (선택, 약 2.5GB)
+python app.py --shortcut                  # 바탕화면 바로가기
 ```
 
-**넷, HuggingFace 토큰을 받아 `env.local`에 넣는다.** 화자 분리에만 필요하다.
-
-1. [huggingface.co](https://huggingface.co)에 가입한다
-2. [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)에서 약관에 동의한다
-3. [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)에서 `Create new token` → 종류를 **Read**로 만든다
-4. `env.local.example`을 `env.local`로 복사하고 `HF_TOKEN=` 뒤에 붙여넣는다
+화자 분리를 쓰려면 HuggingFace 토큰이 필요하다. [huggingface.co](https://huggingface.co) 가입 → [모델 약관 동의](https://huggingface.co/pyannote/speaker-diarization-community-1) → [토큰 만들기](https://huggingface.co/settings/tokens)(종류 **Read**) → `env.local.example`을 `env.local`로 복사하고 `HF_TOKEN=` 뒤에 붙여넣는다.
 
 `env.local`은 `.gitignore`에 걸려 있다. 값을 넣은 채로 올라가지 않는다.
 
@@ -105,6 +98,7 @@ python app.py --selftest            # 이름·용어 교정 규칙 자가 시험
 | 파일 | 하는 일 |
 |---|---|
 | `app.py` | 본체. 화면·전사·화자 분리·교정·기록이 한 파일에 들어 있다 |
+| `setup.py` | 설치기. 더블클릭하면 아홉 단계를 안내한다 |
 | `run_stt.py` | 유료 엔진 5종 일괄 전사. 비교용이다 |
 | `stt_bench.py` | 채점기. CER 외에 간투사 보존율과 화자 오귀속률을 잰다 |
 | `go.py` | 점검 → 전사 → 채점을 한 번에 돌린다 |
@@ -123,19 +117,27 @@ python app.py --selftest            # 이름·용어 교정 규칙 자가 시험
 
 ## 회귀 시험
 
-**`app.py`를 고쳤으면 돌린다.** 절차와 기준값은 [baseline/README.md](baseline/README.md)에 있다.
-
-R1은 26.7초 음원으로 정확도를 재고, R2는 18분 음원으로 구조가 무너지지 않았는지 본다. 음원은 저장소에 없다 — 실존 인물의 녹음이라 넣지 않았다.
-
-교정 규칙과 대기열·화면은 음원 없이도 상당 부분 돌릴 수 있다.
+**`app.py`를 고쳤으면 넷을 다 돌린다.** 음원이 없어도 대부분 돌아간다 — 전사가 필요한 절만 건너뛴다.
 
 ```powershell
-python app.py --selftest        # 이름·용어 교정 16개 사례
+python app.py --selftest        # 이름·용어 교정 16건
 python tests/queue_test.py      # 대기열·이력·설정·모델 캐시 36건
 python tests/screen_test.py     # 화면과 백엔드의 접합면 34건
+python tests/setup_test.py      # 설치기 갈래 24건
 ```
 
-교정 규칙은 두 번 뒤집혔으므로 사례를 코드에 박아 뒀다. 나머지 둘은 음원이 없으면 전사가 필요한 절만 건너뛴다.
+넷 다 통과하면 종료 코드가 0이다. 임시 폴더에서 돌고 끝나면 지운다. `env.local`과 실제 `data/`는 건드리지 않는다.
+
+교정 규칙은 두 번 뒤집혀서 사례를 코드에 박아 뒀다. `fix_terms()`를 손대면 `--selftest`부터 돌린다.
+
+정확도 회귀는 음원이 있어야 한다. **절차와 기준값은 [baseline/README.md](baseline/README.md)에 있다.**
+
+```powershell
+$env:PYTHONIOENCODING = "utf-8"
+python stt_bench.py sample3.txt "out_text/sample3_canon.md" --nouns 이승은 황미혜 이대표님 --detail
+```
+
+R1은 26.7초 음원으로 정확도를 재고 R2는 18분 음원으로 구조가 무너지지 않았는지 본다. **음원은 저장소에 없다** — 실존 인물의 녹음이라 넣지 않았다.
 
 ---
 
@@ -149,8 +151,8 @@ Phase 1은 로컬 무료 트랙만 만든다. 유료 엔진 통합은 Phase 2다
 | 1 | 대기열 · 이력 · 설정 저장 · 모델 캐시 | **끝났다** |
 | 2 | 화면 재구성 | **끝났다** |
 | 3 | 무창 실행 · 종료 버튼 · 진단 화면 | **끝났다** |
-| 4 | 설치 프로그램 · 설치 문서 | 다음 |
+| 4 | 설치 프로그램 · 설치 문서 | **끝났다** |
 
 여러 건을 걸어두면 위에서부터 하나씩 돈다. 앱을 껐다 켜도 남은 항목이 살아 있고, 한 건이 실패해도 다음이 계속된다. 같은 설정이 이어지면 모델을 다시 올리지 않는다.
 
-**남은 것은 설치 자동화다.** 지금은 위의 절차대로 손으로 넷을 한다.
+Phase 2는 유료 엔진 통합과 정본화 판정이다. 지금은 계획이 없다 — [무료 조합이 유료 셋을 모두 앞서기](#왜-무료-조합인가) 때문이다.

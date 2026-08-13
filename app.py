@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-14.1"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-14.2"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))

@@ -219,8 +219,20 @@ clear_queue()
 
 r = post("/outdir/check", {"path": os.path.join(WORK, "새폴더", "안쪽")})
 check("없는 출력 폴더를 만든다", r.get("ok"))
-r = post("/outdir/check", {"path": "Z:\\없는드라이브\\x"})
-check("못 쓰는 폴더는 이유를 알린다", not r.get("ok"), (r.get("why") or "")[:40])
+
+# 못 쓰는 폴더 시험은 권한이 있어야 성립한다.
+# 리눅스 루트는 chmod 500 폴더에도 쓰므로 이 시험이 뜻을 잃는다.
+if os.name == "nt":
+    bad_path = "Z:\\없는드라이브\\x"
+elif hasattr(os, "geteuid") and os.geteuid() == 0:
+    bad_path = None
+else:
+    bad_path = "/proc/못쓰는폴더"
+if bad_path:
+    r = post("/outdir/check", {"path": bad_path})
+    check("못 쓰는 폴더는 이유를 알린다", not r.get("ok"), (r.get("why") or "")[:40])
+else:
+    skip("못 쓰는 폴더는 이유를 알린다", "루트로 돌고 있다. 무엇에나 쓸 수 있어 시험이 성립하지 않는다")
 
 print("\n■ 8. /open 경로 검사\n")
 
