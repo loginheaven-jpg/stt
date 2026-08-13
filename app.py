@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-13.11"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-13.12"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -167,6 +167,240 @@ def log_tail(n: int = 200) -> list:
         return []
 
 
+# ─────────────────────────────────────────────────────────────
+# 상태 — data/settings.json · queue.json · history.json
+#
+# 쓰기는 원자적으로 한다. 임시 파일에 쓰고 flush·fsync 한 뒤 os.replace 로
+# 바꾼다. 3시간짜리 전사 도중에 죽어도 JSON이 깨지지 않아야 한다.
+#
+# 진행률로는 저장하지 않는다. 상태가 바뀔 때만 쓴다.
+# 초당 몇 번씩 디스크를 치면 전사가 디스크를 기다린다.
+# ─────────────────────────────────────────────────────────────
+
+SETTINGS_PATH = os.path.join(DATA, "settings.json")
+QUEUE_PATH = os.path.join(DATA, "queue.json")
+HISTORY_PATH = os.path.join(DATA, "history.json")
+
+STATE_LOCK = threading.RLock()             # 잠금 순서 — STATE_LOCK → LOCK → _LOG_LOCK
+HISTORY_MAX = 200
+
+DEFAULT_OPT = {
+    "model": "large-v3-turbo", "device": "auto", "compute": "int8",
+    "lang": "ko", "beam": 5, "silence": 500,
+    "vad": True, "fallback": True, "prompt": False, "fixterms": True,
+    "hotwords": "",
+    "diarize": False, "nspk": 2, "sens": "high",
+    "formats": {"plain": True, "timed": True, "srt": False, "canon": False},
+}
+
+# 지시서 §3-4 의 기본 제공 두 개. 값을 바꾸지 않는다.
+DEFAULT_PRESETS = [
+    {"name": "코칭 시연", "settings": dict(
+        DEFAULT_OPT, diarize=True, nspk=2, sens="high",
+        formats={"plain": False, "timed": True, "srt": False, "canon": True})},
+    {"name": "강의 받아쓰기", "settings": dict(
+        DEFAULT_OPT, diarize=False,
+        formats={"plain": True, "timed": False, "srt": True, "canon": False})},
+]
+
+SETTINGS = {"version": 1, "last": dict(DEFAULT_OPT),
+            "recent_outdirs": [OUTDIR], "presets": DEFAULT_PRESETS}
+QUEUE = {"version": 1, "items": []}        # waiting · running · interrupted 만 남는다
+HISTORY = {"version": 1, "items": []}      # 끝난 것은 여기로 옮긴다
+
+_ID_SEQ = [0]
+
+
+def new_id(prefix: str) -> str:
+    with STATE_LOCK:
+        _ID_SEQ[0] += 1
+        return f"{prefix}_{int(time.time())}_{_ID_SEQ[0]}"
+
+
+def now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def load_json(path: str, default: dict) -> dict:
+    """깨진 파일은 .bad 로 밀어두고 기본값으로 시작한다. 앱이 못 뜨는 일은 없어야 한다."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and "version" in data:
+            return data
+        raise ValueError("version 필드가 없다")
+    except FileNotFoundError:
+        return json.loads(json.dumps(default))
+    except Exception as e:
+        bad = path + ".bad"
+        try:
+            os.replace(path, bad)
+            log(f"   {os.path.basename(path)} 를 읽지 못해 {os.path.basename(bad)} 로 옮겼다. {e}")
+        except OSError:
+            pass
+        return json.loads(json.dumps(default))
+
+
+def save_json(path: str, obj: dict) -> None:
+    """임시 파일 → flush → fsync → os.replace. 중간에 죽어도 원본이 살아 있다."""
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError as e:
+        log(f"   {os.path.basename(path)} 저장 실패. {e}")
+
+
+def save_settings():
+    with STATE_LOCK:
+        save_json(SETTINGS_PATH, SETTINGS)
+
+
+def save_queue():
+    with STATE_LOCK:
+        save_json(QUEUE_PATH, QUEUE)
+
+
+def save_history():
+    with STATE_LOCK:
+        save_json(HISTORY_PATH, HISTORY)
+
+
+def load_state() -> None:
+    """기동 시 한 번 부른다. 돌던 항목은 interrupted 로 되돌린다."""
+    global SETTINGS, QUEUE, HISTORY
+    with STATE_LOCK:
+        SETTINGS = load_json(SETTINGS_PATH, SETTINGS)
+        QUEUE = load_json(QUEUE_PATH, QUEUE)
+        HISTORY = load_json(HISTORY_PATH, HISTORY)
+        SETTINGS.setdefault("last", dict(DEFAULT_OPT))
+        SETTINGS.setdefault("recent_outdirs", [OUTDIR])
+        SETTINGS.setdefault("presets", DEFAULT_PRESETS)
+        QUEUE.setdefault("items", [])
+        HISTORY.setdefault("items", [])
+
+        # 앱이 죽어 running 으로 남은 항목. 자동으로 다시 돌리지 않는다.
+        # 부분 산출 파일이 이미 있는데 처음부터 다시 돌면 덮어쓴다. 사람이 고른다.
+        n = 0
+        for it in QUEUE["items"]:
+            if it.get("state") == "running":
+                it["state"] = "interrupted"
+                it["message"] = "앱이 중단됐다. 다시 할지 고르면 된다."
+                n += 1
+        if n:
+            save_queue()
+            log(f"   중단된 작업 {n}건을 찾았다. 자동으로 다시 돌리지 않는다.")
+
+
+def remember_outdir(path: str) -> None:
+    with STATE_LOCK:
+        rec = [p for p in SETTINGS.get("recent_outdirs", []) if p != path]
+        SETTINGS["recent_outdirs"] = ([path] + rec)[:5]
+        save_settings()
+
+
+def under(path: str, root: str) -> bool:
+    """접두 검사에 구분자를 붙인다. out_text 가 out_text2 를 통과시키면 안 된다."""
+    a = os.path.normcase(os.path.abspath(path))
+    b = os.path.normcase(os.path.abspath(root))
+    return a == b or a.startswith(b + os.sep)
+
+
+def allowed_roots() -> list:
+    """/open 이 열어도 되는 뿌리. 설정에 등록된 출력 폴더만이다. 임의 경로를 받지 않는다."""
+    with STATE_LOCK:
+        return [OUTDIR] + [p for p in SETTINGS.get("recent_outdirs", []) if p]
+
+
+def check_outdir(path: str) -> dict:
+    """없으면 만들고, 실제로 써 보고 결과를 돌려준다. 브라우저는 폴더 대화상자를 못 연다."""
+    path = os.path.abspath(os.path.expanduser((path or "").strip().strip('"')))
+    if not path:
+        return {"ok": False, "why": "경로가 비었다.", "path": ""}
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "why": f"폴더를 만들지 못했다. {e}", "path": path}
+    probe = os.path.join(path, ".write_test")
+    try:
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("")
+        os.remove(probe)
+    except OSError as e:
+        return {"ok": False, "why": f"쓸 수 없는 폴더다. {e}", "path": path}
+    return {"ok": True, "why": "", "path": path}
+
+
+# ─────────────────────────────────────────────────────────────
+# 모델 캐시
+#
+# 대기열에 5건을 걸면 모델을 5번 적재한다. CPU에서 회당 30~60초다.
+# 같은 조합이면 그대로 쓰고, 바뀌면 이전 것을 놓고 새로 만든다.
+# 실행기가 하나뿐이라 이 캐시에 동시에 손대는 스레드는 없다.
+# ─────────────────────────────────────────────────────────────
+
+CACHE_IDLE_SEC = 600                       # 대기열이 비고 이만큼 지나면 놓는다
+
+_WHISPER = {"key": None, "obj": None}
+_DIA = {"key": None, "obj": None}
+_CACHE_USED = [0.0]
+
+
+def get_whisper(model: str, device: str, compute: str):
+    """(모델, 반환값이 캐시에서 나왔는지)"""
+    from faster_whisper import WhisperModel
+    key = (model, device, compute)
+    _CACHE_USED[0] = time.time()
+    if _WHISPER["key"] == key and _WHISPER["obj"] is not None:
+        return _WHISPER["obj"], True
+    _WHISPER["obj"] = None                 # 새로 만들기 전에 먼저 놓는다. 메모리 때문이다
+    _WHISPER["key"] = None
+    obj = WhisperModel(model, device=device, compute_type=compute)
+    _WHISPER.update(key=key, obj=obj)
+    return obj, False
+
+
+def get_dia_pipeline(tok: str):
+    from pyannote.audio import Pipeline
+    key = DIA_MODEL
+    _CACHE_USED[0] = time.time()
+    if _DIA["key"] == key and _DIA["obj"] is not None:
+        return _DIA["obj"], True
+    _DIA["obj"] = None
+    _DIA["key"] = None
+    try:
+        pipe = Pipeline.from_pretrained(DIA_MODEL, token=tok)
+    except TypeError:                      # 3.x 계열은 인자 이름이 다르다
+        pipe = Pipeline.from_pretrained(DIA_MODEL, use_auth_token=tok)
+    if pipe is None:
+        raise RuntimeError("모델 접근이 거부됐다. HuggingFace에서 약관에 동의했는지 확인해달라.")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            pipe.to(torch.device("cuda"))
+    except Exception:
+        pass
+    _DIA.update(key=key, obj=pipe)
+    return pipe, False
+
+
+def release_cache(why: str = "") -> None:
+    if _WHISPER["obj"] is None and _DIA["obj"] is None:
+        return
+    _WHISPER.update(key=None, obj=None)
+    _DIA.update(key=None, obj=None)
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    log(f"   모델을 메모리에서 놓았다.{(' ' + why) if why else ''}")
+
+
 JOB = {
     "state": "idle",       # idle · loading · running · diarizing · merging · done · error · cancelled
     "phase": "",           # 화면에 띄울 단계 설명
@@ -178,6 +412,8 @@ JOB = {
     "speed": 0.0, "eta": 0.0,
     "segments": 0, "chars": 0,
     "corrections": 0, "holds": 0,      # 이름·용어 교정 반영 건수와 보류 건수
+    "qid": "", "outdir": "",           # 지금 도는 대기열 항목과 그 출력 폴더
+    "cached": False,                   # 모델을 캐시에서 꺼냈는지. 재적재 회귀를 본다
     "tail": [], "outputs": [], "message": "",
 }
 LOCK = threading.Lock()
@@ -289,8 +525,10 @@ def list_audio() -> dict:
             if not (os.path.isfile(p) and name.lower().endswith(AUDIO_EXT)):
                 continue
             stem = os.path.splitext(name)[0]
-            done = any(os.path.exists(os.path.join(OUTDIR, stem + ext))
-                       for ext in (".txt", "_timed.txt", ".srt"))
+            # 변환됨 판정은 등록된 출력 폴더 전부에서 본다. 항목마다 폴더가 다를 수 있다.
+            done = any(os.path.exists(os.path.join(d, stem + ext))
+                       for d in allowed_roots()
+                       for ext in (".txt", "_timed.txt", ".srt", "_canon.md"))
             found.append({
                 "path": p,
                 "name": os.path.relpath(p, roots[0]) if root != roots[0] else name,
@@ -374,7 +612,7 @@ def run_diarization(path: str, want: int, upd) -> list:
         return []
 
     try:
-        from pyannote.audio import Pipeline
+        import pyannote.audio  # noqa: F401
     except ImportError:
         upd(message="pyannote.audio가 없어 화자 분리를 건너뛴다. "
                     "pip install pyannote.audio")
@@ -382,25 +620,15 @@ def run_diarization(path: str, want: int, upd) -> list:
 
     upd(state="diarizing", phase="화자 분리 모델을 준비하고 있다", dia_pct=0.0)
     try:
-        try:
-            pipe = Pipeline.from_pretrained(DIA_MODEL, token=tok)
-        except TypeError:                       # 3.x 계열은 인자 이름이 다르다
-            pipe = Pipeline.from_pretrained(DIA_MODEL, use_auth_token=tok)
-        if pipe is None:
-            raise RuntimeError("모델 접근이 거부됐다. HuggingFace에서 약관에 동의했는지 확인해달라.")
+        pipe, cached = get_dia_pipeline(tok)
+        if cached:
+            log("   화자 분리 모델을 캐시에서 꺼냈다")
     except Exception as e:
         msg = (f"화자 분리 모델을 불러오지 못했다. {type(e).__name__}: {e}  "
                f"HuggingFace에서 {DIA_MODEL} 약관에 동의했는지, 토큰이 Read 권한인지 확인해달라.")
         log("   " + msg)
         upd(message=msg)
         return []
-
-    try:                                        # GPU가 있으면 쓴다
-        import torch
-        if torch.cuda.is_available():
-            pipe.to(torch.device("cuda"))
-    except Exception:
-        pass
 
     def hook(step, artifact=None, file=None, total=None, completed=None, **kw):
         if CANCEL.is_set():
@@ -708,12 +936,12 @@ def fix_terms(rows: list, terms: list) -> list:
     return hits
 
 
-def write_ledger(entries: list, stem: str, off: float) -> str:
+def write_ledger(entries: list, stem: str, off: float, outdir: str = None) -> str:
     """
     교정 대장. 정본화 규칙 부록 A 형식이다.
     무엇을 왜 바꿨는지 남기지 않으면 보정이 또 다른 왜곡이 된다.
     """
-    path = os.path.join(OUTDIR, f"{stem}_corrections.md")
+    path = os.path.join(outdir or OUTDIR, f"{stem}_corrections.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"# 교정 대장 — {stem}\n\n")
         f.write("지정한 이름·용어와 음가가 가까운 오인식을 되돌린 내역이다.\n")
@@ -731,13 +959,15 @@ def write_ledger(entries: list, stem: str, off: float) -> str:
     return path
 
 
-def write_outputs(rows: list, stem: str, want: dict, diarized: bool) -> list:
+def write_outputs(rows: list, stem: str, want: dict, diarized: bool,
+                  outdir: str = None) -> list:
     """최종 파일을 쓴다. 화자 분리 후에는 이 함수로 다시 쓴다."""
+    d = outdir or OUTDIR
     paths, made = {
-        "plain": os.path.join(OUTDIR, f"{stem}.txt"),
-        "timed": os.path.join(OUTDIR, f"{stem}_timed.txt"),
-        "srt": os.path.join(OUTDIR, f"{stem}.srt"),
-        "canon": os.path.join(OUTDIR, f"{stem}_canon.md"),
+        "plain": os.path.join(d, f"{stem}.txt"),
+        "timed": os.path.join(d, f"{stem}_timed.txt"),
+        "srt": os.path.join(d, f"{stem}.srt"),
+        "canon": os.path.join(d, f"{stem}_canon.md"),
     }, []
 
     def spk(r):
@@ -778,10 +1008,11 @@ def write_outputs(rows: list, stem: str, want: dict, diarized: bool) -> list:
     return made
 
 
-def transcribe(path: str, opt: dict) -> None:
-    """배경 스레드에서 돈다. 1단계 전사, 2단계 화자 분리, 3단계 재작성."""
+def transcribe(path: str, opt: dict, outdir: str = None) -> None:
+    """대기열 실행기에서 부른다. 1단계 전사, 2단계 화자 분리, 3단계 재작성."""
     stem = os.path.splitext(os.path.basename(path))[0]
-    os.makedirs(OUTDIR, exist_ok=True)
+    outdir = os.path.abspath(outdir or OUTDIR)
+    os.makedirs(outdir, exist_ok=True)
 
     def upd(**kw):
         with LOCK:
@@ -794,7 +1025,7 @@ def transcribe(path: str, opt: dict) -> None:
 
     upd(state="loading", file=path, stem=stem, phase="모델을 준비하고 있다", message="",
         processed=0.0, segments=0, chars=0, tail=[], outputs=[], speakers=0, dia_pct=0.0,
-        corrections=0, holds=0,
+        corrections=0, holds=0, outdir=outdir, cached=False,
         started=time.time(), elapsed=0.0, speed=0.0, eta=0.0)
 
     fmt = ",".join(k for k in ("plain", "timed", "srt", "canon") if opt["formats"].get(k))
@@ -807,14 +1038,16 @@ def transcribe(path: str, opt: dict) -> None:
     log(f"         이름·용어 {opt.get('hotwords') or '없음'}")
 
     try:
-        from faster_whisper import WhisperModel
+        import faster_whisper  # noqa: F401
     except ImportError:
         fail("faster-whisper가 없다. pip install faster-whisper 를 실행해달라.")
         return
 
     try:
-        model = WhisperModel(opt["model"], device=opt["device"],
-                             compute_type=opt["compute"])
+        t_load = time.time()
+        model, cached = get_whisper(opt["model"], opt["device"], opt["compute"])
+        upd(cached=cached)
+        log(f"   모델 {'재사용' if cached else '적재'} {time.time() - t_load:.1f}초")
     except Exception as e:
         fail(f"모델을 불러오지 못했다. {e}")
         return
@@ -864,7 +1097,7 @@ def transcribe(path: str, opt: dict) -> None:
         phase="받아쓰는 중" + (" · 끝나면 화자를 나눈다" if diarize else ""))
 
     # ── 1단계 · 전사. 구간마다 임시 파일에 적어 중단에 대비한다 ──
-    tmp = os.path.join(OUTDIR, f"{stem}.txt")
+    tmp = os.path.join(outdir, f"{stem}.txt")
     rows, n, chars = [], 0, 0
     stopped = False
     try:
@@ -915,10 +1148,10 @@ def transcribe(path: str, opt: dict) -> None:
     fixlog = []                              # log() 를 가리지 않도록 이름을 달리한다
     if opt.get("fixterms") and hot:
         fixlog = fix_terms(final, hot.split(","))
-    made = write_outputs(final, stem, opt["formats"], bool(turns))
+    made = write_outputs(final, stem, opt["formats"], bool(turns), outdir)
     if fixlog:
         off = final[0]["start"] if final else 0.0
-        lp = write_ledger(fixlog, stem, off)
+        lp = write_ledger(fixlog, stem, off, outdir)
         made.append({"name": os.path.basename(lp), "path": lp})
 
     with LOCK:
@@ -948,6 +1181,190 @@ def transcribe(path: str, opt: dict) -> None:
         log(f"   저장  {m['path']}")
     if msg:
         log(f"   알림  {msg}")
+
+
+# ─────────────────────────────────────────────────────────────
+# 대기열 실행기
+#
+# 실행기는 하나다. 동시 실행 금지가 플래그 검사가 아니라 구조로 보장된다.
+# large-v3 와 pyannote 가 함께 뜨면 수 GB 를 쓴다.
+#
+# 상태 전이는 언제나 "파일 먼저, 실행 나중" 이다.
+#   저장 전에 죽으면 → waiting 으로 남아 다음에 다시 시도된다
+#   저장 후 실행 전에 죽으면 → running 으로 남고 다음 기동에서 interrupted 가 된다
+# 순서를 뒤집으면 같은 항목이 두 번 도는 길이 열린다.
+# ─────────────────────────────────────────────────────────────
+
+STOP_ALL = threading.Event()               # 전체 중지. 현재 항목은 끝낸다
+
+
+def take_next() -> dict:
+    """대기 중인 첫 항목을 running 으로 바꾸고 저장한 뒤 돌려준다."""
+    with STATE_LOCK:
+        for it in QUEUE["items"]:
+            if it.get("state") == "waiting":
+                it["state"] = "running"
+                it["started"] = now_iso()
+                save_queue()               # 파일 먼저
+                return dict(it)            # 실행 나중
+    return None
+
+
+def finish_item(item: dict) -> None:
+    """끝난 항목을 큐에서 빼고 이력으로 옮긴다. 대기열 화면이 곧 남은 일이 된다."""
+    with LOCK:
+        j = dict(JOB)
+    rec = {
+        "id": new_id("h"), "qid": item["id"],
+        "name": os.path.basename(item["path"]), "path": item["path"],
+        "outdir": item.get("outdir", ""),
+        "duration": round(j.get("duration", 0.0), 2),
+        "started": item.get("started", ""), "finished": now_iso(),
+        "elapsed": round(j.get("elapsed", 0.0), 2),
+        "speed": round(j.get("speed", 0.0), 3),
+        "speakers": j.get("speakers", 0), "segments": j.get("segments", 0),
+        "chars": j.get("chars", 0),
+        "corrections": j.get("corrections", 0), "holds": j.get("holds", 0),
+        "cached": bool(j.get("cached")),
+        "settings": item.get("settings", {}),
+        "outputs": [o["path"] for o in j.get("outputs", [])],
+        "state": j.get("state", "done"), "message": j.get("message", ""),
+    }
+    with STATE_LOCK:
+        QUEUE["items"] = [x for x in QUEUE["items"] if x["id"] != item["id"]]
+        HISTORY["items"] = ([rec] + HISTORY["items"])[:HISTORY_MAX]
+        save_queue()
+        save_history()
+
+
+def queue_loop() -> None:
+    """기동 시 데몬 스레드 하나로 돈다."""
+    while True:
+        item = None if STOP_ALL.is_set() else take_next()
+        if item is None:
+            if _CACHE_USED[0] and time.time() - _CACHE_USED[0] > CACHE_IDLE_SEC:
+                _CACHE_USED[0] = 0.0
+                release_cache(f"{CACHE_IDLE_SEC // 60}분 동안 할 일이 없었다.")
+            time.sleep(0.4)
+            continue
+
+        CANCEL.clear()
+        with LOCK:
+            JOB["qid"] = item["id"]
+        try:
+            transcribe(item["path"], item["settings"], item.get("outdir"))
+        except Exception as e:
+            # 한 항목이 터져도 대기열은 멈추지 않는다.
+            import traceback
+            log("   실행기가 예외를 받았다 —\n" + traceback.format_exc())
+            with LOCK:
+                JOB.update(state="error", message=f"{type(e).__name__}: {e}")
+        finish_item(item)
+
+
+def enqueue(paths: list, settings: dict, outdir: str) -> dict:
+    """여러 건을 한 번에 담는다. 담기는 순간 실행기가 집어간다."""
+    chk = check_outdir(outdir)
+    if not chk["ok"]:
+        return {"error": chk["why"]}
+
+    files = []
+    for p in paths:
+        p = os.path.abspath((p or "").strip().strip('"'))
+        if not os.path.isfile(p):
+            return {"error": f"파일을 찾지 못했다: {p}"}
+        files.append(p)
+    if not files:
+        return {"error": "담을 파일을 고르지 않았다."}
+
+    # 같은 이름이 같은 폴더로 가면 나중 것이 앞의 것을 덮어쓴다. 막지는 않고 알린다.
+    warn = []
+    with STATE_LOCK:
+        pending = {(x.get("outdir", ""), os.path.splitext(os.path.basename(x["path"]))[0])
+                   for x in QUEUE["items"]}
+        seen = set()
+        for p in files:
+            stem = os.path.splitext(os.path.basename(p))[0]
+            key = (chk["path"], stem)
+            if key in pending or key in seen:
+                warn.append(f"{stem} — 같은 이름이 대기열에 이미 있다")
+            elif any(os.path.exists(os.path.join(chk["path"], stem + e))
+                     for e in (".txt", "_timed.txt", ".srt", "_canon.md")):
+                warn.append(f"{stem} — 같은 이름의 결과가 이미 있다")
+            seen.add(key)
+
+        added = []
+        for p in files:
+            it = {"id": new_id("q"), "path": p, "name": os.path.basename(p),
+                  "outdir": chk["path"], "state": "waiting",
+                  "settings": settings, "added": now_iso(), "message": ""}
+            QUEUE["items"].append(it)
+            added.append(it["id"])
+        SETTINGS["last"] = settings
+        save_queue()
+        save_settings()
+
+    remember_outdir(chk["path"])
+    log(f"▷ 대기열에 {len(added)}건을 담았다 → {chk['path']}")
+    return {"ok": True, "ids": added, "warn": warn}
+
+
+def move_item(qid: str, delta: int) -> dict:
+    """대기 중인 항목만 옮긴다. 도는 항목은 자리를 지킨다."""
+    with STATE_LOCK:
+        items = QUEUE["items"]
+        idx = next((i for i, x in enumerate(items) if x["id"] == qid), -1)
+        if idx < 0:
+            return {"error": "항목을 찾지 못했다."}
+        if items[idx].get("state") == "running":
+            return {"error": "지금 도는 항목은 옮길 수 없다."}
+        tgt = idx + delta
+        if tgt < 0 or tgt >= len(items) or items[tgt].get("state") == "running":
+            return {"ok": True}
+        items[idx], items[tgt] = items[tgt], items[idx]
+        save_queue()
+    return {"ok": True}
+
+
+def remove_item(qid: str) -> dict:
+    with STATE_LOCK:
+        it = next((x for x in QUEUE["items"] if x["id"] == qid), None)
+        if it is None:
+            return {"error": "항목을 찾지 못했다."}
+        if it.get("state") == "running":
+            return {"error": "지금 도는 항목이다. 먼저 중단해달라."}
+        QUEUE["items"] = [x for x in QUEUE["items"] if x["id"] != qid]
+        save_queue()
+    return {"ok": True}
+
+
+def resume_item(qid: str, mode: str) -> dict:
+    """중단된 항목을 다시 돌린다. 남아 있는 부분 산출을 보존할지 사람이 고른다."""
+    with STATE_LOCK:
+        it = next((x for x in QUEUE["items"] if x["id"] == qid), None)
+        if it is None:
+            return {"error": "항목을 찾지 못했다."}
+        if it.get("state") != "interrupted":
+            return {"error": "중단된 항목이 아니다."}
+        stem = os.path.splitext(os.path.basename(it["path"]))[0]
+        d = it.get("outdir") or OUTDIR
+        kept = []
+        if mode == "keep":
+            for ext in (".txt", "_timed.txt", ".srt", "_canon.md", "_corrections.md"):
+                src = os.path.join(d, stem + ext)
+                if os.path.exists(src):
+                    dst = os.path.join(d, stem + "_부분" + ext)
+                    try:
+                        os.replace(src, dst)
+                        kept.append(os.path.basename(dst))
+                    except OSError as e:
+                        return {"error": f"부분 산출을 옮기지 못했다. {e}"}
+        it["state"] = "waiting"
+        it["message"] = ""
+        save_queue()
+    if kept:
+        log(f"   부분 산출을 보존했다 — {', '.join(kept)}")
+    return {"ok": True, "kept": kept}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1384,33 +1801,117 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if u.path == "/open":
             p = urllib.parse.parse_qs(u.query).get("p", [""])[0]
-            if os.path.isfile(p) and os.path.abspath(p).startswith(OUTDIR):
+            # startswith 를 쓰지 않는다. out_text 가 out_text2 를 통과시킨다.
+            # 허용 뿌리는 설정에 등록된 출력 폴더뿐이다. 임의 경로를 받지 않는다.
+            if os.path.isfile(p) and any(under(p, r) for r in allowed_roots()):
                 with open(p, "rb") as f:
                     return self._send(200, f.read(), "text/plain; charset=utf-8")
             return self._send(404, b"not found", "text/plain")
 
+        if u.path == "/queue":
+            with STATE_LOCK:
+                return self._json({"items": QUEUE["items"],
+                                   "stopall": STOP_ALL.is_set()})
+
+        if u.path == "/history":
+            n = int(urllib.parse.parse_qs(u.query).get("n", ["50"])[0] or 50)
+            with STATE_LOCK:
+                return self._json({"items": HISTORY["items"][:min(n, HISTORY_MAX)]})
+
+        if u.path == "/settings":
+            with STATE_LOCK:
+                return self._json(SETTINGS)
+
+        if u.path == "/state":
+            with LOCK:
+                job = dict(JOB)
+            with STATE_LOCK:
+                return self._json({
+                    "job": job, "queue": QUEUE["items"],
+                    "stopall": STOP_ALL.is_set(),
+                    "history": HISTORY["items"][:20],
+                    "settings": SETTINGS, "version": APP_VERSION})
+
         return self._send(404, b"not found", "text/plain")
+
+    def _body(self) -> dict:
+        n = int(self.headers.get("Content-Length", 0))
+        try:
+            return json.loads(self.rfile.read(n) or b"{}")
+        except ValueError:
+            return {}
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
 
-        if u.path == "/cancel":
+        if u.path == "/cancel":                 # 현재 항목만 중단하고 다음으로 간다
             CANCEL.set()
             return self._json({"ok": True})
 
         if u.path == "/start":
-            n = int(self.headers.get("Content-Length", 0))
-            opt = json.loads(self.rfile.read(n) or b"{}")
-            path = opt.get("path", "").strip().strip('"')
+            # 없애지 않는다. 큐에 1건 넣고 곧바로 도는 것으로 속만 바꿨다.
+            # 기존 화면의 시작 버튼·/status 폴링·중단 버튼이 그대로 동작한다.
+            opt = self._body()
+            path = (opt.get("path") or "").strip().strip('"')
+            outdir = opt.get("outdir") or OUTDIR
+            opt.pop("path", None)
+            opt.pop("outdir", None)
+            return self._json(enqueue([path], dict(DEFAULT_OPT, **opt), outdir))
 
-            if JOB["state"] in ("loading", "running"):
-                return self._json({"error": "이미 받아쓰는 중이다."})
-            if not path or not os.path.isfile(path):
-                return self._json({"error": f"파일을 찾지 못했다: {path}"})
+        if u.path == "/queue/add":
+            b = self._body()
+            settings = dict(DEFAULT_OPT, **(b.get("settings") or {}))
+            return self._json(enqueue(b.get("paths") or [], settings,
+                                      b.get("outdir") or OUTDIR))
 
-            CANCEL.clear()
-            threading.Thread(target=transcribe, args=(path, opt), daemon=True).start()
+        if u.path == "/queue/move":
+            b = self._body()
+            return self._json(move_item(b.get("id", ""), int(b.get("dir", 0))))
+
+        if u.path == "/queue/remove":
+            return self._json(remove_item(self._body().get("id", "")))
+
+        if u.path == "/queue/resume":
+            b = self._body()
+            return self._json(resume_item(b.get("id", ""), b.get("mode", "overwrite")))
+
+        if u.path == "/queue/stopall":
+            on = bool(self._body().get("on", True))
+            STOP_ALL.set() if on else STOP_ALL.clear()
+            log(f"   전체 {'중지' if on else '재개'}")
+            return self._json({"ok": True, "stopall": on})
+
+        if u.path == "/history/remove":
+            hid = self._body().get("id", "")
+            with STATE_LOCK:
+                HISTORY["items"] = [x for x in HISTORY["items"] if x["id"] != hid]
+                save_history()
             return self._json({"ok": True})
+
+        if u.path == "/history/again":
+            hid = self._body().get("id", "")
+            with STATE_LOCK:
+                rec = next((x for x in HISTORY["items"] if x["id"] == hid), None)
+            if rec is None:
+                return self._json({"error": "기록을 찾지 못했다."})
+            b = self._body()
+            settings = dict(rec.get("settings") or DEFAULT_OPT)
+            settings.update(b.get("settings") or {})     # 이름·용어를 보태 다시 돌린다
+            return self._json(enqueue([rec["path"]], settings,
+                                      b.get("outdir") or rec.get("outdir") or OUTDIR))
+
+        if u.path == "/settings":
+            b = self._body()
+            with STATE_LOCK:
+                if "last" in b:
+                    SETTINGS["last"] = dict(DEFAULT_OPT, **b["last"])
+                if "presets" in b:
+                    SETTINGS["presets"] = b["presets"]
+                save_settings()
+                return self._json(SETTINGS)
+
+        if u.path == "/outdir/check":
+            return self._json(check_outdir(self._body().get("path", "")))
 
         return self._send(404, b"not found", "text/plain")
 
@@ -1511,6 +2012,8 @@ def main() -> None:
 
     load_env()
     os.makedirs(OUTDIR, exist_ok=True)
+    load_state()
+    threading.Thread(target=queue_loop, daemon=True).start()
     url = f"http://127.0.0.1:{PORT}"
     log(f"\n  받아쓰기 v{APP_VERSION} — {url}")
     log(f"  음원 폴더 — {AUDIODIR}"
@@ -1526,6 +2029,12 @@ def main() -> None:
     log(f"  화자 분리 — " + (f"HF_TOKEN 확인 {mask(tok)}" if tok
                             else "HF_TOKEN 없음. 화자 분리를 쓸 수 없다"))
     log(f"  기록 파일 — {LOG_PATH}")
+    with STATE_LOCK:
+        n_wait = sum(1 for x in QUEUE["items"] if x.get("state") == "waiting")
+        n_int = sum(1 for x in QUEUE["items"] if x.get("state") == "interrupted")
+        n_hist = len(HISTORY["items"])
+    log(f"  대기열 — 대기 {n_wait}건"
+        + (f" · 중단됨 {n_int}건" if n_int else "") + f" · 이력 {n_hist}건")
     log(f"  종료하려면 이 창에서 Ctrl+C\n")
     try:
         webbrowser.open(url)

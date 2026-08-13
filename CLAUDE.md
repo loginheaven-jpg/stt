@@ -54,15 +54,36 @@ python run_stt.py --check                                    # 인증 정보만 
 
 단일 파일 ~1300줄. 표준 라이브러리 `http.server`만 쓴다. **Flask·FastAPI 등 프레임워크를 도입하지 않는다** (설치 관문).
 
-### 전역 상태
+### 전역 상태와 잠금
 
 ```
-JOB    dict — 진행 상태 전부. /status 가 그대로 직렬화해 내려준다
-LOCK   threading.Lock — JOB 접근을 감싼다
-CANCEL threading.Event — 중단 신호. 전사 루프와 pyannote hook이 함께 본다
+JOB        dict — 지금 도는 항목의 진행 상태. /status 가 그대로 내려준다
+LOCK       JOB 접근을 감싼다
+CANCEL     현재 항목만 중단. 전사 루프와 pyannote hook이 함께 본다
+STOP_ALL   전체 중지. 현재 항목은 끝내고 다음을 집지 않는다
+SETTINGS · QUEUE · HISTORY   data/*.json 에 실린 상태
+STATE_LOCK 위 셋을 감싼다
 ```
 
-전사는 배경 스레드 하나에서 돈다. 동시 실행 금지 — `large-v3` + pyannote가 같이 뜨면 수 GB다.
+**잠금 순서는 `STATE_LOCK → LOCK → _LOG_LOCK` 하나로 고정한다.** 역순으로 잡는 경로가 하나라도 생기면 교착한다. `_LOG_LOCK`은 잎 잠금이다 — 쥔 채로 다른 잠금을 잡지 않는다.
+
+### 대기열
+
+`queue_loop()`가 데몬 스레드 하나로 돈다. **실행기가 하나뿐이라 동시 실행 금지가 플래그 검사가 아니라 구조로 보장된다.** `large-v3`와 pyannote가 같이 뜨면 수 GB다.
+
+**상태 전이는 언제나 "파일 먼저, 실행 나중"이다.** `take_next()`가 `running`으로 바꾸고 저장한 뒤에 항목을 돌려준다. 저장 전에 죽으면 `waiting`으로 남아 다시 시도되고, 저장 후 실행 전에 죽으면 `running`으로 남아 다음 기동에서 `interrupted`가 된다. 순서를 뒤집으면 같은 항목이 두 번 도는 길이 열린다.
+
+`interrupted`는 **자동으로 다시 돌리지 않는다.** 부분 산출이 이미 있는데 처음부터 다시 돌면 덮어쓴다. `/queue/resume`에서 `mode=keep`이면 기존 산출을 `이름_부분.*`로 옮기고 다시 담는다.
+
+끝난 항목은 큐에서 빠져 `history.json`으로 간다. `queue.json`에는 `waiting`·`running`·`interrupted`만 남는다 — 대기열 화면이 곧 남은 일이다.
+
+**JSON 쓰기는 원자적이다.** 임시 파일 → `flush` → `fsync` → `os.replace`. 그리고 **진행률로는 저장하지 않는다.** 상태가 바뀔 때만 쓴다.
+
+### 모델 캐시
+
+`(model, device, compute)`를 키로 `WhisperModel`을, `DIA_MODEL`을 키로 pyannote 파이프라인을 잡아 둔다. 조합이 바뀌면 이전 것을 먼저 놓고 새로 만든다. 대기열이 비고 10분이 지나면 놓는다.
+
+효과가 크다 — 화자 분리를 켠 R1 3회에서 **15.69초 → 1.12초**다. Whisper 적재와 pyannote 파이프라인 적재를 함께 아낀다. **R2의 배속이 이 캐시의 회귀 감지기다.**
 
 ### 전사 3단계 — [app.py:627](app.py#L627) `transcribe()`
 
@@ -88,9 +109,16 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 
 ### HTTP
 
-`GET /` `/files` `/diacheck` `/version` `/status` `/open?p=` · `POST /start` `/cancel`
+| | 경로 |
+|---|---|
+| GET | `/` `/files` `/diacheck` `/version` `/status` `/log?n=` `/open?p=` `/queue` `/history?n=` `/settings` `/state` |
+| POST | `/start` `/cancel` `/queue/add` `/queue/move` `/queue/remove` `/queue/resume` `/queue/stopall` `/history/remove` `/history/again` `/settings` `/outdir/check` |
 
-`/open`은 `OUTDIR` 밖 경로를 거부한다. 새 엔드포인트를 추가할 때도 경로 검사를 넣는다.
+**`POST /start`를 없애지 않았다.** 큐에 1건 넣고 곧바로 도는 것으로 속만 바꿨다. 기존 화면의 시작 버튼·`/status` 폴링·중단 버튼이 손대지 않아도 그대로 동작한다. 이것이 1단계에서 회귀를 지킨 방식이다. 다만 작업 중에 눌러도 이제 오류가 아니라 대기열에 쌓인다.
+
+`/state`는 2단계 화면용이다. 구역이 넷이라고 요청을 넷 보내지 않는다.
+
+**`/open`은 `startswith`를 쓰지 않는다.** `out_text`가 `out_text2`를 통과시킨다. `under()`가 구분자를 붙여 검사하고, 허용 뿌리는 **설정에 등록된 출력 폴더뿐**이다. 임의 경로를 받지 않는다. 새 엔드포인트를 만들 때도 같은 검사를 넣는다.
 
 ### 절대 건드리지 않는 것
 
@@ -126,11 +154,9 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 
 보완서가 바꾼 것 — §1-3 비교표는 근거 자료일 뿐 인수 조건이 아니다 · §9-1은 폐기하고 R1·R2로 대체한다 · `stt_bench.py`는 채점 로직만 동결이고 인코딩 수정은 허용한다 · 0단계(기준선 동결)를 맨 앞에 넣는다.
 
-**0단계는 끝났다.** `baseline/`에 R1·R2 산출물과 측정치가 동결돼 있고, §6-1 무창 실행 로깅이 `app.py`에 들어갔다(v2026-08-13.8).
+**0단계와 1단계가 끝났다.** `baseline/`에 R1·R2가 동결돼 있고, 무창 실행 로깅(§6-1)·대기열·이력·설정 저장·모델 캐시(§6-2)·중단 작업 처리(§6-3)·잠금 순서(§6-4)·`/open` 허용 목록(§6-5)이 모두 들어갔다.
 
-1단계(대기열·이력·설정 백엔드)부터가 남았다. `data/`에는 `app.log`만 있고 `settings.json`·`queue.json`·`history.json`은 아직 없다. `start.vbs`·`setup.py`·`설치안내.md`도 없다.
-
-보완서가 1단계에 추가한 요구 — 모델·pyannote 캐시 재사용(§6-2) · 재시작 시 `running`을 자동 재실행하지 말고 `interrupted`로 두기(§6-3) · 잠금 순서를 `STATE_LOCK → LOCK`으로 고정(§6-4) · `/open`은 등록된 출력 폴더 목록만 허용(§6-5).
+**2단계(화면 재구성)부터가 남았다.** 화면은 아직 0단계 그대로다 — 파일 하나를 골라 시작하는 단일 작업 화면이고, 대기열·이력·프리셋·출력 폴더 고르개가 화면에 없다. 백엔드는 `/state` 하나로 다 내려줄 준비가 돼 있다. `start.vbs`·`setup.py`·`설치안내.md`도 없다.
 
 ### `fix_terms()` — 꼬리 우선 분할
 
