@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-13.10"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-13.11"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -640,6 +640,10 @@ TAILS = {
     "코치", "코치님", "대표", "대표님", "선생", "선생님", "이었다", "였다",
 }
 
+# 긴 꼬리를 먼저 본다. "이대포님이라고" 에서 "라고" 가 먼저 걸리면
+# 머리가 "이대포님이" 가 되어 거리가 벌어진다. "이라고" 가 먼저여야 한다.
+_TAILS_LONG_FIRST = sorted(TAILS, key=len, reverse=True)
+
 
 def fix_terms(rows: list, terms: list) -> list:
     """
@@ -661,38 +665,43 @@ def fix_terms(rows: list, terms: list) -> list:
             if not core:
                 continue
             for t in terms:
-                if t in core:                # 이미 맞게 적혔다
-                    break
-                n = len(t)
+                if t in core:                # 이미 맞게 적혔다. 이 가드가 없으면
+                    break                    # "이승은" 이 "이승은은" 이 된다
                 best = None
-                # 조각은 어절 머리에서만 찾는다.
-                # 가운데를 훑으면 "상황에서"의 "황에"가 "황미혜"로 잡힌다.
-                for ln in (n, n + 1, n - 1):
-                    if ln < 2 or ln > len(core):
+                # 꼬리를 먼저 정하고 머리를 맞춘다.
+                # "입니다" 가 꼬리 목록에 있으니 그 앞이 이름 자리다.
+                # 머리를 먼저 자르면 "이승|입니다" 를 못 찾아 보류로 빠진다.
+                for tail in _TAILS_LONG_FIRST:
+                    if tail and not core.endswith(tail):
                         continue
-                    piece = core[:ln]
-                    if piece[0] != t[0]:
+                    head = core[:len(core) - len(tail)] if tail else core
+                    if len(head) < 2 or head[0] != t[0]:
                         continue
-                    d = edit(jamo(piece), jt[t])
+                    d = edit(jamo(head), jt[t])
                     if d and d <= max_distance(t) and d / len(jt[t]) <= 0.45:
                         if best is None or d < best[0]:
-                            best = (d, piece)
-                if not best:
-                    continue
-
-                d, piece = best
-                tail = core[len(piece):]
-                if tail not in TAILS:
-                    # 조각을 바꾸면 뒤가 깨진다. 본문은 그대로 두고 대장에만 올린다.
-                    # 마스터 프롬프트 §4-2 — 단정할 수 없으면 고치지 않는다.
-                    hits.append({"time": r["start"], "was": core, "now": t,
-                                 "dist": d, "of": len(jt[t]), "hold": True})
+                            best = (d, head, tail)
+                if best:
+                    d, head, tail = best
+                    parts[i] = w.replace(head, t, 1)
+                    hits.append({"time": r["start"], "was": head, "now": t,
+                                 "dist": d, "of": len(jt[t]), "hold": False})
+                    hit = True
                     break
 
-                parts[i] = w.replace(piece, t, 1)
-                hits.append({"time": r["start"], "was": piece, "now": t,
-                             "dist": d, "of": len(jt[t]), "hold": False})
-                hit = True
+                # 꼬리가 성립하는 자리가 없다. 머리만 닮았으면 본문은 그대로 두고
+                # 대장에만 올린다. 마스터 프롬프트 §4-2 — 단정할 수 없으면 고치지 않는다.
+                n = len(t)
+                for ln in (n, n + 1, n - 1):
+                    if ln < 2 or ln > len(core) or core[:ln][0] != t[0]:
+                        continue
+                    d = edit(jamo(core[:ln]), jt[t])
+                    if d and d <= max_distance(t) and d / len(jt[t]) <= 0.45:
+                        hits.append({"time": r["start"], "was": core, "now": t,
+                                     "dist": d, "of": len(jt[t]), "hold": True})
+                        break
+                else:
+                    continue
                 break
         if hit:
             r["text"] = " ".join(parts)
@@ -1429,6 +1438,64 @@ def port_busy(port: int) -> str:
         return "정체를 알 수 없는 프로그램"
 
 
+# ─────────────────────────────────────────────────────────────
+# 자가 시험 — python app.py --selftest
+#
+# fix_terms 의 규칙은 두 번 뒤집혔다. 어절 가운데를 훑다가 "상황이라서" 를
+# "상황미혜서" 로 깨뜨렸고, 머리를 먼저 자르다가 "이승입니다" 를 보류로 흘렸다.
+# 사례를 코드에 박아두지 않으면 세 번째가 온다.
+# ─────────────────────────────────────────────────────────────
+
+SELFTEST_TERMS = ["이승은", "황미혜", "이대표님", "스쿼트",
+                  "에스컬레이터", "헬스클럽", "대중교통"]
+
+SELFTEST_CASES = [
+    # (입력, 기대 출력, 분류)
+    ("이승입니다",      "이승은입니다",     "정상 교정"),
+    ("이승님입니다",     "이승은입니다",     "정상 교정"),
+    ("황미애입니다",     "황미혜입니다",     "정상 교정"),
+    ("이대포님이라고",    "이대표님이라고",    "정상 교정"),
+    ("헬스컬러에서",     "헬스클럽에서",     "정상 교정"),
+    ("대중대통을",      "대중교통을",      "정상 교정"),
+    ("에스칼레이터를",    "에스컬레이터를",    "정상 교정"),
+
+    ("상황이라서",      "상황이라서",      "파괴 차단"),   # 황이라 → 황미혜
+    ("상황에서",       "상황에서",       "파괴 차단"),   # 황에서 → 황미혜
+    ("사이클을",       "사이클을",       "파괴 차단"),   # 이클을 → 이승은
+
+    ("이승은이",       "이승은이",       "이미 맞음"),
+    ("대중교통을",      "대중교통을",      "이미 맞음"),
+    ("황미혜코치님",     "황미혜코치님",     "이미 맞음"),
+    ("이대표님이라고",    "이대표님이라고",    "이미 맞음"),
+
+    ("이상하다",       "이상하다",       "무관"),
+    ("헬스장에서",      "헬스장에서",      "무관"),
+]
+
+
+def selftest() -> int:
+    """16개 사례를 돌린다. 하나라도 어긋나면 1을 돌려준다."""
+    print(f"\n  fix_terms 자가 시험 — v{APP_VERSION}\n")
+    bad, holds = 0, 0
+    for src, want, kind in SELFTEST_CASES:
+        rows = [{"start": 0.0, "text": src}]
+        hits = fix_terms(rows, list(SELFTEST_TERMS))
+        got = rows[0]["text"]
+        holds += sum(1 for e in hits if e.get("hold"))
+        mark = "OK  " if got == want else "실패"
+        if got != want:
+            bad += 1
+        note = ""
+        if hits:
+            e = hits[0]
+            note = f"{'보류' if e.get('hold') else '반영'} {e['was']}→{e['now']} {e['dist']}/{e['of']}"
+        print(f"  {mark} [{kind}] {src:<12} → {got:<12} {note}")
+        if got != want:
+            print(f"       기대: {want}")
+    print(f"\n  {len(SELFTEST_CASES)}건 중 {len(SELFTEST_CASES) - bad}건 통과 · 보류 {holds}건\n")
+    return 1 if bad else 0
+
+
 def main() -> None:
     setup_log()
 
@@ -1473,4 +1540,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     main()
