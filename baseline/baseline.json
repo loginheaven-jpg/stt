@@ -1,0 +1,84 @@
+{
+ "created": "2026-08-14",
+ "app_version": "2026-08-13.10",
+ "note": "보완서 §4로 재정의한 회귀 기준선. 원 지시서 §9-1의 다섯 수치는 폐기했다. v.9의 fix_terms 교체와 v.8의 로깅을 병합한 v.10에서 다시 쟀다.",
+ "env": {
+  "python": "3.13.7",
+  "faster_whisper": "1.2.1",
+  "pyannote_audio": "4.0.7",
+  "torch": "2.13.0+cu126",
+  "device_setting": "auto",
+  "device_actual": "cuda",
+  "gpu": "NVIDIA GeForce RTX 3060",
+  "os": "Windows 10 Pro 19045"
+ },
+ "settings": {
+  "common": {
+   "model": "large-v3-turbo",
+   "device": "auto",
+   "compute": "int8",
+   "lang": "ko",
+   "beam": 5,
+   "silence": 500,
+   "vad": true,
+   "fallback": true,
+   "prompt": false,
+   "fixterms": true,
+   "diarize": true,
+   "nspk": 2,
+   "sens": "high",
+   "formats": {"plain": false, "timed": false, "srt": false, "canon": true}
+  },
+  "R1_hotwords": "이승은, 황미혜, 이대표님",
+  "R2_hotwords": "이승은, 황미혜, 이대표님, 스쿼트, 에스컬레이터, 헬스클럽, 대중교통"
+ },
+ "R1": {
+  "audio": "audio/sample3.wav",
+  "audio_sec": 26.73,
+  "ref": "sample3.txt",
+  "runs": 3,
+  "cer": 12.5,
+  "wer": 43.33,
+  "spk_error": 0.0,
+  "spk_correct": 43.33,
+  "filler": 44.44,
+  "nouns": 66.67,
+  "insert": 0,
+  "delete": 0,
+  "speakers": 2,
+  "utterances": 10,
+  "words": 26,
+  "corrections": 0,
+  "holds": 1,
+  "verdict": "탈락:간투사삭제",
+  "spread": {
+   "정확도지표": "3회 전부 동일. 편차 0",
+   "elapsed_sec": [16.14, 18.28, 18.31],
+   "speed": [1.624, 1.434, 1.432]
+  }
+ },
+ "R2": {
+  "audio": "audio/이승은코치.m4a",
+  "audio_sec": 1094.68,
+  "runs": 1,
+  "speakers": 2,
+  "segments": 143,
+  "words": 1358,
+  "corrections": 0,
+  "holds": 1,
+  "end_sec": 1087,
+  "speed": 22.301,
+  "elapsed_transcribe_sec": 49.07,
+  "elapsed_total_sec": 104.41,
+  "chars": 5077
+ },
+ "history": [
+  {
+   "app_version": "2026-08-13.8",
+   "R1": {"nouns": 100.0, "corrections": 1},
+   "R2": {"corrections": 3, "speed": 22.96},
+   "폐기사유": "fix_terms 가 어절을 깨뜨린 채 낸 값이다. R1 고유명사 100%는 '이승은니다'라는 깨진 어절 안에 이름이 들어 있어 집계된 것이고, R2 교정 3건은 전부 파괴였다(상황이라서→상황미혜서 · 사이클을→사이승은 · 이승입니다→이승은니다). v.9의 머리 고정·꼬리 검증으로 셋 다 사라졌다."
+  }
+ ],
+ "known_defects": []
+}
