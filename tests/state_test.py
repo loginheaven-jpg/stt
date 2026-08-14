@@ -32,16 +32,18 @@ import app  # noqa: E402
 
 app.webbrowser.open = lambda *a, **k: None
 PORT = os.environ["PORT"]
+REAL_GET_WHISPER = app.get_whisper      # 갈아 끼운 뒤 되돌리려면 원본을 붙들어야 한다
 
 # 전사 대상. 내용은 보지 않는다. 가짜 모델이 대신 답한다.
 FAKE = os.path.join(WORK, "가짜음원.wav")
 with open(FAKE, "wb") as f:
     f.write(b"\0" * 64)
 
-OPT = dict(app.DEFAULT_OPT, diarize=False, fixterms=False,
+# 기본은 cpu 다. auto 로 두면 §11 의 대체 경로가 다른 절에까지 끼어든다.
+OPT = dict(app.DEFAULT_OPT, diarize=False, fixterms=False, device="cpu",
            formats={"plain": True, "timed": False, "srt": False, "canon": False})
 
-ok, bad = [], []
+ok, bad, skipped = [], [], []
 
 
 def check(name, cond, detail=""):
@@ -89,11 +91,11 @@ class FakeModel:
 
 
 def use(model=None, raise_on_load=None):
-    """app.get_whisper 를 갈아 끼운다."""
+    """app.get_whisper 를 갈아 끼운다. (모델, 캐시적중, 실제기기, 실제정밀도)"""
     def fake(name, device, compute):
         if raise_on_load:
             raise raise_on_load
-        return model, False
+        return model, False, ("cpu" if device == "auto" else device), compute
     app.get_whisper = fake
 
 
@@ -209,9 +211,9 @@ calls = {"n": 0}
 def once_boom(name, device, compute):
     calls["n"] += 1
     if calls["n"] == 1:
-        return FakeModel([Seg(0.0, 3.0, "가")], 12.0,
-                         boom=RuntimeError("일부러 낸 오류")), False
-    return FakeModel([Seg(0.0, 6.0, "나")], 12.0), False
+        return (FakeModel([Seg(0.0, 3.0, "가")], 12.0,
+                          boom=RuntimeError("일부러 낸 오류")), False, "cpu", compute)
+    return FakeModel([Seg(0.0, 6.0, "나")], 12.0), False, "cpu", compute
 
 
 app.get_whisper = once_boom
@@ -230,8 +232,137 @@ states = [x["state"] for x in reversed(get("/state")["history"][:2])]
 check("첫째가 실패해도 둘째가 돈다", states == ["error", "done"], str(states))
 check("마지막 화면은 둘째 것이다", get("/state")["job"]["state"] == "done")
 
+CUDA_ERR = "Library cublas64_12.dll is not found or cannot be loaded"
+
+print("\n■ 11. auto 인데 CUDA 가 안 되면 CPU 로 다시 시작한다\n")
+# 진짜 사고는 모델 생성이 아니라 전사 도중에 났다. 여기서도 그렇게 흉내 낸다.
+seen = []
+
+
+def gw_loop_boom(name, device, compute):
+    seen.append(device)
+    if device != "cpu":
+        return (FakeModel([Seg(0.0, 3.0, "GPU가 남긴 반쪽")], 12.0,
+                          boom=RuntimeError(CUDA_ERR)), False, "cuda", compute)
+    return (FakeModel([Seg(0.0, 5.0, "CPU 첫째"), Seg(5.0, 11.0, "CPU 둘째")], 12.0),
+            False, "cpu", "int8")
+
+
+app.get_whisper = gw_loop_boom
+OPT_AUTO = dict(OPT, device="auto")
+post("/queue/add", {"paths": [FAKE], "settings": OPT_AUTO, "outdir": os.environ["OUTDIR"]})
+t0 = time.time()
+while time.time() - t0 < 60:
+    s = get("/state")
+    if not [x for x in s["queue"] if x["state"] in ("waiting", "running")] \
+            and s["job"]["state"] in app.TERMINAL:
+        break
+    time.sleep(0.2)
+j = get("/state")["job"]
+check("완주한다", j["state"] == "done", j["state"])
+check("기기가 cpu 로 남는다", j["device"] == "cpu", j["device"])
+check("전환 사유를 남긴다", "CPU로 다시 시작" in j["device_note"], j["device_note"][:70])
+check("cuda 를 먼저 시도하고 cpu 로 갔다", seen == ["auto", "cpu"], str(seen))
+
+body = open(os.path.join(os.environ["OUTDIR"], "가짜음원.txt"), encoding="utf-8").read()
+check("GPU 가 남긴 반쪽이 지워졌다", "GPU가 남긴 반쪽" not in body, repr(body[:60]))
+check("CPU 판만 남는다", "CPU 첫째" in body and "CPU 둘째" in body)
+check("이력에도 기기가 남는다", get("/state")["history"][0]["device"] == "cpu")
+post("/job/dismiss", {})
+
+print("\n■ 12. cuda 를 명시로 고르면 내려가지 않는다\n")
+seen.clear()
+app.get_whisper = gw_loop_boom
+post("/queue/add", {"paths": [FAKE], "settings": dict(OPT, device="cuda"),
+                    "outdir": os.environ["OUTDIR"]})
+t0 = time.time()
+while time.time() - t0 < 60:
+    s = get("/state")
+    if not [x for x in s["queue"] if x["state"] in ("waiting", "running")] \
+            and s["job"]["state"] in app.TERMINAL:
+        break
+    time.sleep(0.2)
+j = get("/state")["job"]
+check("오류로 끝난다", j["state"] == "error", j["state"])
+check("CPU 로 내려가지 않았다", seen == ["cuda"], str(seen))
+check("전사 중이라고 밝힌다", "전사 중 멈췄다" in j["message"])
+check("GPU 안내를 짚는다", "기기를 cpu" in j["message"])
+post("/job/dismiss", {})
+
+print("\n■ 13. 재시작은 한 번뿐이다\n")
+seen.clear()
+
+
+def gw_always_boom(name, device, compute):
+    seen.append(device)
+    return (FakeModel([Seg(0.0, 3.0, "조각")], 12.0, boom=RuntimeError(CUDA_ERR)),
+            False, device, compute)
+
+
+app.get_whisper = gw_always_boom
+post("/queue/add", {"paths": [FAKE], "settings": OPT_AUTO, "outdir": os.environ["OUTDIR"]})
+t0 = time.time()
+while time.time() - t0 < 60:
+    s = get("/state")
+    if not [x for x in s["queue"] if x["state"] in ("waiting", "running")] \
+            and s["job"]["state"] in app.TERMINAL:
+        break
+    time.sleep(0.2)
+j = get("/state")["job"]
+check("두 번째도 실패하면 오류다", j["state"] == "error", j["state"])
+check("판은 둘까지만 돈다", seen == ["auto", "cpu"], str(seen))
+post("/job/dismiss", {})
+
+print("\n■ 14. 캐시 키에 실제 기기가 들어간다\n")
+app.get_whisper = REAL_GET_WHISPER      # 앞 절의 가짜를 걷어낸다. 진짜를 시험한다
+import faster_whisper  # noqa: E402
+
+real_model = faster_whisper.WhisperModel
+made = []
+
+
+class StubModel:
+    def __init__(self, name, device=None, compute_type=None):
+        made.append((name, device, compute_type))
+        if device == "cuda":
+            raise RuntimeError(CUDA_ERR)
+
+
+faster_whisper.WhisperModel = StubModel
+try:
+    app._WHISPER.update(key=None, obj=None)
+    _, cached1, dev1, comp1 = app.get_whisper("모형", "auto", "float16")
+    check("auto 가 cpu 로 내려간다", (dev1, comp1) == ("cpu", "int8"), f"{dev1}/{comp1}")
+    check("정밀도도 함께 내린다", comp1 == "int8")
+    check("키가 실제 기기로 잡힌다", app._WHISPER["key"] == ("모형", "cpu", "int8"),
+          str(app._WHISPER["key"]))
+    n_before = len(made)
+    _, cached2, dev2, _ = app.get_whisper("모형", "auto", "float16")
+    check("다음 항목은 캐시에서 나온다", cached2 is True)
+    check("CUDA 를 다시 시도하지 않는다", len(made) == n_before, f"{len(made)-n_before}회 더 만들었다")
+finally:
+    faster_whisper.WhisperModel = real_model
+    app._WHISPER.update(key=None, obj=None)
+
+print("\n■ 15. CUDA DLL 경로 등록\n")
+app.register_cuda_dlls._done = False
+app.CUDA_DLL_DIRS.clear()
+before = os.environ.get("PATH", "")
+dirs = app.register_cuda_dlls()
+check("예외 없이 끝난다", isinstance(dirs, list))
+check("두 번 불러도 다시 하지 않는다", app.register_cuda_dlls() is dirs)
+if dirs:
+    check("찾은 폴더가 PATH 앞에 붙는다", all(d in os.environ["PATH"] for d in dirs),
+          " · ".join(os.path.basename(os.path.dirname(d)) for d in dirs))
+    check("실제로 있는 폴더다", all(os.path.isdir(d) for d in dirs))
+    check("손잡이를 붙들고 있다", len(app._DLL_HANDLES) > 0 or os.name != "nt")
+else:
+    skipped.append("DLL 경로")
+    print("  건너뜀 DLL 경로   이 PC 에서 찾지 못했다")
+
 print(f"\n{'=' * 60}")
-print(f"  통과 {len(ok)} · 실패 {len(bad)}")
+print(f"  통과 {len(ok)} · 실패 {len(bad)}"
+      + (f" · 건너뜀 {len(skipped)}" if skipped else ""))
 for b in bad:
     print(f"    실패 — {b}")
 print(f"{'=' * 60}\n")

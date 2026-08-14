@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-14.4"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-14.5"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -349,19 +349,111 @@ _WHISPER = {"key": None, "obj": None}
 _DIA = {"key": None, "obj": None}
 _CACHE_USED = [0.0]
 
+# ─────────────────────────────────────────────────────────────
+# CUDA DLL 경로
+#
+# pip 는 DLL 을 site-packages 안에 넣지만 PATH 에 올리지 않는다. 파이썬이
+# import 하는 패키지가 아니라 네이티브 라이브러리가 찾아야 하는 파일이라서다.
+# ctranslate2 가 cublas64_12.dll 을 못 찾는 가장 흔한 원인이 이것이다.
+#
+# 두 곳을 본다. 기계마다 어디서 얻는지가 다르다.
+#   nvidia/*/bin  — nvidia-cublas-cu12 같은 휠. 네임스페이스 패키지라
+#                   __file__ 이 None 이므로 __path__ 를 순회한다
+#   torch/lib     — 만든 PC 는 휠이 하나도 없고 여기서 얻는다
+#
+# torch 를 여기서 명시적으로 import 하는 것도 목적이다. 지금까지는
+# import faster_whisper 의 부작용으로 우연히 불려 왔다. 우연에 기대지 않는다.
+# ─────────────────────────────────────────────────────────────
+
+CUDA_DLL_DIRS = []
+_DLL_HANDLES = []          # add_dll_directory 가 준 손잡이. 놓으면 등록이 풀린다
+_AUTO_DEV = [None]         # auto 가 마지막에 무엇으로 풀렸는지. 헛시도를 막는다
+
+
+def register_cuda_dlls() -> list:
+    """CUDA DLL 폴더를 이 프로세스에 등록한다. 한 번만 돈다."""
+    if getattr(register_cuda_dlls, "_done", False):
+        return CUDA_DLL_DIRS
+    register_cuda_dlls._done = True
+
+    import glob
+    cands = []
+    try:
+        import nvidia
+        for root in list(nvidia.__path__):
+            cands += sorted(glob.glob(os.path.join(root, "*", "bin")))
+    except Exception:
+        pass                               # 휠이 없어도 torch 쪽이 있을 수 있다
+    try:
+        import torch
+        cands.append(os.path.join(os.path.dirname(torch.__file__), "lib"))
+    except Exception:
+        pass
+
+    for d in cands:
+        if not os.path.isdir(d) or d in CUDA_DLL_DIRS:
+            continue
+        CUDA_DLL_DIRS.append(d)
+        if os.name == "nt":
+            try:
+                # 손잡이를 붙들어 둔다. 버리면 GC 가 등록을 되돌린다.
+                _DLL_HANDLES.append(os.add_dll_directory(d))
+            except OSError:
+                pass
+        # 자식 프로세스와 일부 로더를 위해 PATH 에도 넣는다
+        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+
+    if CUDA_DLL_DIRS:
+        log(f"   CUDA DLL 경로 {len(CUDA_DLL_DIRS)}곳 등록 — "
+            + " · ".join(os.path.basename(os.path.dirname(d)) for d in CUDA_DLL_DIRS))
+    else:
+        log("   CUDA DLL 폴더를 찾지 못했다. CPU 로 돈다.")
+    return CUDA_DLL_DIRS
+
 
 def get_whisper(model: str, device: str, compute: str):
-    """(모델, 반환값이 캐시에서 나왔는지)"""
+    """
+    (모델, 캐시적중, 실제기기, 실제정밀도) 를 돌려준다.
+
+    auto 는 CUDA 를 먼저 만들어 보고 안 되면 CPU 로 내려간다.
+    cuda 를 명시로 고른 경우에는 내려가지 않는다 — 조용히 느려지면 원인을 못 찾는다.
+
+    **캐시 키에는 요청 기기가 아니라 실제 기기를 넣는다.** auto 로 요청해 CPU 로
+    내려갔는데 키가 auto 로 남으면 다음 항목이 또 CUDA 를 시도한다.
+    """
     from faster_whisper import WhisperModel
-    key = (model, device, compute)
     _CACHE_USED[0] = time.time()
+
+    want = "cuda" if device == "auto" else device
+    # 한 번 내려갔으면 다음 항목부터는 CUDA 를 다시 시도하지 않는다.
+    # 이것이 없으면 항목마다 실패를 되풀이하며 몇 초씩 버린다.
+    if device == "auto" and _AUTO_DEV[0] == "cpu":
+        want, compute = "cpu", "int8"
+    if want == "cuda":
+        register_cuda_dlls()
+
+    key = (model, want, compute)
     if _WHISPER["key"] == key and _WHISPER["obj"] is not None:
-        return _WHISPER["obj"], True
-    _WHISPER["obj"] = None                 # 새로 만들기 전에 먼저 놓는다. 메모리 때문이다
-    _WHISPER["key"] = None
-    obj = WhisperModel(model, device=device, compute_type=compute)
+        return _WHISPER["obj"], True, want, compute
+
+    _WHISPER.update(key=None, obj=None)    # 새로 만들기 전에 먼저 놓는다. 메모리 때문이다
+    try:
+        obj = WhisperModel(model, device=want, compute_type=compute)
+    except Exception as e:
+        if device != "auto" or not is_cuda_error(e):
+            raise
+        log(f"   CUDA 로 모델을 못 올렸다. CPU 로 내려간다. {str(e)[:120]}")
+        want, compute = "cpu", "int8"      # CPU 에서 float16 은 더 느리거나 실패한다
+        _AUTO_DEV[0] = "cpu"
+        key = (model, want, compute)
+        if _WHISPER["key"] == key and _WHISPER["obj"] is not None:
+            return _WHISPER["obj"], True, want, compute
+        obj = WhisperModel(model, device=want, compute_type=compute)
+
+    if device == "auto":
+        _AUTO_DEV[0] = want
     _WHISPER.update(key=key, obj=obj)
-    return obj, False
+    return obj, False, want, compute
 
 
 def get_dia_pipeline(tok: str):
@@ -378,12 +470,17 @@ def get_dia_pipeline(tok: str):
         pipe = Pipeline.from_pretrained(DIA_MODEL, use_auth_token=tok)
     if pipe is None:
         raise RuntimeError("모델 접근이 거부됐다. HuggingFace에서 약관에 동의했는지 확인해달라.")
+    # torch.cuda.is_available() 이 참이어도 실제 연산에서 깨질 수 있다.
+    # 실패하면 CPU 에 둔다. 조용히 넘기지 않고 남긴다 — 배속이 왜 낮은지의 단서다.
     try:
         import torch
         if torch.cuda.is_available():
             pipe.to(torch.device("cuda"))
-    except Exception:
-        pass
+            log("   화자 분리 — GPU")
+        else:
+            log("   화자 분리 — CPU (GPU를 찾지 못했다)")
+    except Exception as e:
+        log(f"   화자 분리 — CPU 로 둔다. GPU 전환에 실패했다. {str(e)[:120]}")
     _DIA.update(key=key, obj=pipe)
     return pipe, False
 
@@ -447,6 +544,7 @@ JOB = {
     "corrections": 0, "holds": 0,      # 이름·용어 교정 반영 건수와 보류 건수
     "qid": "", "hid": "", "outdir": "",   # 대기열 항목 · 이력 항목 · 출력 폴더
     "cached": False,                   # 모델을 캐시에서 꺼냈는지. 재적재 회귀를 본다
+    "device": "", "device_note": "",   # 실제로 쓴 기기와, 전환이 있었다면 그 사유
     "tail": [], "outputs": [], "message": "",
 }
 LOCK = threading.Lock()
@@ -1065,6 +1163,7 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
         processed=0.0, segments=0, chars=0, tail=[], outputs=[], speakers=0, dia_pct=0.0,
         corrections=0, holds=0, outdir=outdir, cached=False,
         duration=0.0, hid="",          # 앞 작업 값이 남으면 막대와 [다시 시도] 가 엉뚱해진다
+        device="", device_note="",     # 기기와 전환 사유도 앞 작업 것을 물려받지 않는다
         started=time.time(), elapsed=0.0, speed=0.0, eta=0.0)
 
     fmt = ",".join(k for k in ("plain", "timed", "srt", "canon") if opt["formats"].get(k))
@@ -1083,18 +1182,7 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
              hint="setup.py 를 다시 더블클릭하면 설치된다.")
         return
 
-    try:
-        t_load = time.time()
-        model, cached = get_whisper(opt["model"], opt["device"], opt["compute"])
-        upd(cached=cached)
-        log(f"   모델 {'재사용' if cached else '적재'} {time.time() - t_load:.1f}초")
-    except Exception as e:
-        fail(f"모델을 불러오지 못했다. {e}",
-             hint=("GPU를 쓸 수 없다. 설정에서 기기를 cpu 로 바꾸거나 진단 화면을 확인해달라."
-                   if is_cuda_error(e) else
-                   "모델을 처음 받는 중이라면 인터넷 연결을 확인해달라."))
-        return
-
+    # 기기와 무관한 준비는 한 번만 한다. CPU 로 다시 시작해도 되풀이하지 않는다.
     diarize = bool(opt.get("diarize"))
     if diarize:
         chk = dia_check()
@@ -1102,6 +1190,7 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
             diarize = False
             upd(message="화자 분리를 못 한다 — " + chk["why"] + " 받아쓰기는 그대로 진행한다.")
             log("   화자 분리 불가 — " + chk["why"])
+
     kwargs = dict(
         beam_size=opt["beam"],
         condition_on_previous_text=False,   # 침묵 구간 반복 환각을 막는다
@@ -1120,62 +1209,122 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
 
     hot = ", ".join(w.strip() for w in opt.get("hotwords", "").split(",") if w.strip())
 
-    try:
-        if hot:
-            try:
-                segments, info = model.transcribe(path, hotwords=hot, **kwargs)
-            except TypeError:
-                kwargs["initial_prompt"] = (
-                    (kwargs.get("initial_prompt", "") + " ").strip()
-                    + f" 등장하는 이름과 용어: {hot}.")
-                segments, info = model.transcribe(path, **kwargs)
-        else:
-            segments, info = model.transcribe(path, **kwargs)
-    except Exception as e:
-        fail(f"음원을 읽지 못했다. {e}",
-             hint="파일이 손상됐거나 지원하지 않는 형식일 수 있다. 다른 파일로 확인해달라.")
-        return
-
-    dur = float(getattr(info, "duration", 0.0)) or probe_duration(path)
-    upd(state="running", duration=dur,
-        phase="받아쓰는 중" + (" · 끝나면 화자를 나눈다" if diarize else ""))
-
-    # ── 1단계 · 전사. 구간마다 임시 파일에 적어 중단에 대비한다 ──
+    # 구간마다 즉시 적는 임시 파일. 2시간 50분에 죽어도 거기까지 남는다.
     tmp = os.path.join(outdir, f"{stem}.txt")
-    rows, n, chars = [], 0, 0
-    stopped = False
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            for seg in segments:
-                if CANCEL.is_set():
-                    stopped = True
-                    break
-                text = (seg.text or "").strip()
-                if not text:
-                    continue
-                n += 1
-                chars += len(text)
-                rows.append({
-                    "start": float(seg.start), "end": float(seg.end), "text": text,
-                    "words": [{"start": float(w.start), "end": float(w.end),
-                               "text": w.word} for w in (seg.words or [])]
-                    if getattr(seg, "words", None) else [],
-                })
-                f.write(text + "\n")
-                f.flush()
 
-                el = time.time() - JOB["started"]
-                sp = seg.end / el if el > 0 else 0
-                with LOCK:
-                    JOB.update(processed=seg.end, segments=n, chars=chars, elapsed=el,
-                               speed=sp,
-                               eta=max(0.0, (dur - seg.end) / sp) if (sp > 0 and dur > 0) else 0.0)
-                    JOB["tail"] = (JOB["tail"] + [{"t": hms(seg.start), "s": 0, "x": text}])[-14:]
-    except Exception as e:
-        fail(f"전사 중 멈췄다. {e}",
-             hint=("GPU를 쓸 수 없다. 설정에서 기기를 cpu 로 바꾸거나 진단 화면을 확인해달라."
-                   if is_cuda_error(e) else ""))
-        return
+    class PassError(Exception):
+        """한 판이 실패했다. 어느 단계였는지를 들고 다닌다."""
+
+        def __init__(self, stage, err):
+            super().__init__(str(err))
+            self.stage, self.err = stage, err
+
+    def one_pass(device: str, compute: str):
+        """모델을 올리고 구간을 훑는다. (rows, dur, stopped) 를 돌려준다."""
+        try:
+            t_load = time.time()
+            model, cached, dev, comp = get_whisper(opt["model"], device, compute)
+            upd(cached=cached, device=dev)
+            log(f"   모델 {'재사용' if cached else '적재'} {time.time() - t_load:.1f}초 "
+                f"· 기기 {dev} · {comp}")
+        except Exception as e:
+            raise PassError("model", e)
+
+        try:
+            if hot:
+                try:
+                    segments, info = model.transcribe(path, hotwords=hot, **kwargs)
+                except TypeError:
+                    # 옛 판은 hotwords 를 모른다. 프롬프트로 대신한다.
+                    # kwargs 를 그대로 두고 사본을 고친다 — 다시 시작할 때 섞이면 안 된다.
+                    kw = dict(kwargs)
+                    kw["initial_prompt"] = ((kw.get("initial_prompt", "") + " ").strip()
+                                            + f" 등장하는 이름과 용어: {hot}.")
+                    segments, info = model.transcribe(path, **kw)
+            else:
+                segments, info = model.transcribe(path, **kwargs)
+        except Exception as e:
+            raise PassError("open", e)
+
+        dur = float(getattr(info, "duration", 0.0)) or probe_duration(path)
+        upd(state="running", duration=dur,
+            phase="받아쓰는 중" + (" · 끝나면 화자를 나눈다" if diarize else ""))
+
+        rows, n, chars, stopped = [], 0, 0, False
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                for seg in segments:
+                    if CANCEL.is_set():
+                        stopped = True
+                        break
+                    text = (seg.text or "").strip()
+                    if not text:
+                        continue
+                    n += 1
+                    chars += len(text)
+                    rows.append({
+                        "start": float(seg.start), "end": float(seg.end), "text": text,
+                        "words": [{"start": float(w.start), "end": float(w.end),
+                                   "text": w.word} for w in (seg.words or [])]
+                        if getattr(seg, "words", None) else [],
+                    })
+                    f.write(text + "\n")
+                    f.flush()
+
+                    el = time.time() - JOB["started"]
+                    sp = seg.end / el if el > 0 else 0
+                    with LOCK:
+                        JOB.update(processed=seg.end, segments=n, chars=chars, elapsed=el,
+                                   speed=sp,
+                                   eta=max(0.0, (dur - seg.end) / sp)
+                                   if (sp > 0 and dur > 0) else 0.0)
+                        JOB["tail"] = (JOB["tail"]
+                                       + [{"t": hms(seg.start), "s": 0, "x": text}])[-14:]
+        except Exception as e:
+            raise PassError("loop", e)
+        return rows, dur, stopped
+
+    # ── 판 돌리기. CUDA 가 안 되면 CPU 로 처음부터 다시 한 번 ──
+    #
+    # 규칙 넷을 못 박는다.
+    #   1회만    재시작은 한 번. 또 실패하면 오류
+    #   auto만   cuda 를 명시로 고른 경우에는 내려가지 않는다
+    #   혼합금지  GPU 절반 + CPU 절반 전사문이 나오면 안 된다. 처음부터 다시
+    #   부분폐기  다시 시작하기 전에 임시 파일을 비운다. 이것은 "중단" 이 아니라
+    #            "다시 하는 것" 이므로 _부분 파일을 만들지 않는다 (§6-3 과 구분)
+    want = (opt.get("device") or "auto").strip()
+    dev, comp = want, opt["compute"]
+    rows, dur, stopped = [], 0.0, False
+    for attempt in (1, 2):
+        try:
+            rows, dur, stopped = one_pass(dev, comp)
+            break
+        except PassError as pe:
+            cuda = is_cuda_error(pe.err)
+            if attempt == 1 and want == "auto" and cuda:
+                note = f"GPU를 쓸 수 없어 CPU로 다시 시작했다. {str(pe.err)[:110]}"
+                log("   " + note)
+                try:
+                    with open(tmp, "w", encoding="utf-8"):
+                        pass                    # 반쪽 전사문이 남지 않게 비운다
+                except OSError:
+                    pass
+                upd(processed=0.0, segments=0, chars=0, tail=[], duration=0.0,
+                    speed=0.0, eta=0.0, elapsed=0.0, started=time.time(),
+                    device_note=note, phase="CPU로 다시 시작한다")
+                dev, comp = "cpu", "int8"       # CPU 에서 float16 은 더 느리거나 실패한다
+                continue
+            gpu_hint = "GPU를 쓸 수 없다. 설정에서 기기를 cpu 로 바꾸거나 진단 화면을 확인해달라."
+            msg, hint = {
+                "model": (f"모델을 불러오지 못했다. {pe.err}",
+                          gpu_hint if cuda else
+                          "모델을 처음 받는 중이라면 인터넷 연결을 확인해달라."),
+                "open": (f"음원을 읽지 못했다. {pe.err}",
+                         "파일이 손상됐거나 지원하지 않는 형식일 수 있다. 다른 파일로 확인해달라."),
+                "loop": (f"전사 중 멈췄다. {pe.err}", gpu_hint if cuda else ""),
+            }[pe.stage]
+            fail(msg, hint=hint)
+            return
 
     if not rows:
         upd(phase="")
@@ -1278,6 +1427,8 @@ def finish_item(item: dict) -> None:
         "chars": j.get("chars", 0),
         "corrections": j.get("corrections", 0), "holds": j.get("holds", 0),
         "cached": bool(j.get("cached")),
+        # 나중에 배속을 견줄 때 근거가 된다. GPU 22× 와 CPU 2× 를 같은 표에 놓으면 안 된다.
+        "device": j.get("device", ""), "device_note": j.get("device_note", ""),
         "settings": item.get("settings", {}),
         "outputs": [o["path"] for o in j.get("outputs", [])],
         "state": j.get("state", "done"), "message": j.get("message", ""),
@@ -2230,6 +2381,18 @@ def diagnose(force: bool = False) -> dict:
             dirs.append({"label": label, "path": p, "exists": False, "why": str(e)})
     d["dirs"] = dirs
     d["log"] = {"path": LOG_PATH, "exists": os.path.isfile(LOG_PATH)}
+
+    try:
+        # 물리적으로 GPU 가 있는지와 실제로 쓸 수 있는지는 다른 질문이다.
+        # get_cuda_device_count() 는 즉답이다 — 모델을 만들지 않으므로 460MB 를 받지 않는다.
+        # 다만 이것이 1 이어도 전사가 된다는 보장은 아니다. cublas 는 실제 추론에서 걸린다.
+        register_cuda_dlls()
+        import ctranslate2
+        d["cuda"] = {"count": ctranslate2.get_cuda_device_count(),
+                     "dll_dirs": list(CUDA_DLL_DIRS)}
+    except Exception as e:
+        d["cuda"] = {"count": 0, "dll_dirs": list(CUDA_DLL_DIRS),
+                     "error": f"{type(e).__name__}: {e}"[:200]}
 
     _DIAG.update(t=time.time(), data=d)
     return d
