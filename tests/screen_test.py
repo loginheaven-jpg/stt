@@ -81,7 +81,8 @@ check("최상위 키", set(s) >= {"job", "queue", "stopall", "history", "setting
       str(sorted(s)))
 need_job = {"state", "phase", "dia_pct", "speakers", "file", "stem", "duration",
             "processed", "elapsed", "speed", "eta", "segments", "chars",
-            "corrections", "holds", "tail", "outputs", "message", "qid", "outdir", "cached"}
+            "corrections", "holds", "tail", "outputs", "message",
+            "qid", "hid", "outdir", "cached"}
 check("job 키", set(s["job"]) >= need_job, str(sorted(need_job - set(s["job"]))))
 check("settings 키", set(s["settings"]) >= {"last", "recent_outdirs", "presets"})
 check("프리셋 2종", len(s["settings"]["presets"]) == 2)
@@ -145,6 +146,13 @@ else:
     for n in ("진행 상태", "기록", "같은 설정으로 다시"):
         skipped.append(n)
         print(f"  건너뜀 {n}   음원이 없다")
+
+print("\n■ 5-2. 끝난 알림 내리기\n")
+r = post("/job/dismiss", {})
+check("끝난 알림을 내린다", bool(r.get("ok")) or "아직" in str(r.get("error", "")),
+      str(r))
+if r.get("ok"):
+    check("idle 로 돌아간다", get("/state")["job"]["state"] == "idle")
 
 print("\n■ 6. 진단 화면\n")
 d = get("/diag")

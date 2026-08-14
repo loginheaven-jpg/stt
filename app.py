@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-14.2"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-14.4"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -401,6 +401,39 @@ def release_cache(why: str = "") -> None:
     log(f"   모델을 메모리에서 놓았다.{(' ' + why) if why else ''}")
 
 
+# ─────────────────────────────────────────────────────────────
+# 작업 끝맺기
+#
+# 종료 상태에서 phase 가 남으면 화면이 진행 중으로 보인다. 오류 띠가 떠 있는데
+# "받아쓰는 중" 이 함께 남고 실패한 작업에 중단 버튼이 붙는다. 실제로 겪었다.
+# 끝나는 길이 여럿이므로 전이를 이 함수 하나로 모은다.
+# ─────────────────────────────────────────────────────────────
+
+TERMINAL = ("done", "error", "cancelled")
+
+# CUDA 계열 실패를 알아보는 표지. 오류 문구에 이것들이 섞여 나온다.
+CUDA_HINTS = ("cublas", "cudnn", "cudart", "nvrtc", "libcu", "CUDA", "cuda")
+
+
+def is_cuda_error(e) -> bool:
+    return any(k in str(e) for k in CUDA_HINTS)
+
+
+def finish_job(state: str, message: str = "", hint: str = "") -> None:
+    """
+    작업을 끝맺는다. 모든 종료 경로가 여기를 지난다. 예외 경로도 포함한다.
+
+    processed 는 손대지 않는다 — 실패 지점을 그대로 보여야 어디서 멈췄는지 안다.
+    다만 done 이면 duration 으로 맞춘다. 끝난 일이 98% 로 남으면 도구를 못 믿는다.
+    """
+    with LOCK:
+        if state == "done" and JOB.get("duration"):
+            JOB["processed"] = JOB["duration"]
+        if hint:
+            message = (message + "\n→ " + hint) if message else hint
+        JOB.update(state=state, phase="", eta=0.0, message=message)
+
+
 JOB = {
     "state": "idle",       # idle · loading · running · diarizing · merging · done · error · cancelled
     "phase": "",           # 화면에 띄울 단계 설명
@@ -412,7 +445,7 @@ JOB = {
     "speed": 0.0, "eta": 0.0,
     "segments": 0, "chars": 0,
     "corrections": 0, "holds": 0,      # 이름·용어 교정 반영 건수와 보류 건수
-    "qid": "", "outdir": "",           # 지금 도는 대기열 항목과 그 출력 폴더
+    "qid": "", "hid": "", "outdir": "",   # 대기열 항목 · 이력 항목 · 출력 폴더
     "cached": False,                   # 모델을 캐시에서 꺼냈는지. 재적재 회귀를 본다
     "tail": [], "outputs": [], "message": "",
 }
@@ -1018,14 +1051,20 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
         with LOCK:
             JOB.update(kw)
 
-    def fail(msg: str, state: str = "error"):
-        """실패 사유는 화면과 기록에 함께 남긴다. 기록이 없으면 무창 실행에서 원인을 못 찾는다."""
-        upd(state=state, message=msg)
-        log(f"   실패 — {msg}")
+    def fail(msg: str, state: str = "error", hint: str = ""):
+        """
+        실패를 알린다. 무엇이 · 왜 · 무엇을 하면 되는지 세 조각이다.
+
+        어느 파일이 실패했는지 밝히지 않으면 대기열에서 무엇이 죽었는지 알 수 없다.
+        기록에도 남긴다 — 무창 실행에서는 그것만이 단서다.
+        """
+        finish_job(state, f"{os.path.basename(path)} — {msg}", hint)
+        log(f"   실패 — {msg}" + (f" / {hint}" if hint else ""))
 
     upd(state="loading", file=path, stem=stem, phase="모델을 준비하고 있다", message="",
         processed=0.0, segments=0, chars=0, tail=[], outputs=[], speakers=0, dia_pct=0.0,
         corrections=0, holds=0, outdir=outdir, cached=False,
+        duration=0.0, hid="",          # 앞 작업 값이 남으면 막대와 [다시 시도] 가 엉뚱해진다
         started=time.time(), elapsed=0.0, speed=0.0, eta=0.0)
 
     fmt = ",".join(k for k in ("plain", "timed", "srt", "canon") if opt["formats"].get(k))
@@ -1040,7 +1079,8 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
     try:
         import faster_whisper  # noqa: F401
     except ImportError:
-        fail("faster-whisper가 없다. pip install faster-whisper 를 실행해달라.")
+        fail("받아쓰기 엔진이 없다.",
+             hint="setup.py 를 다시 더블클릭하면 설치된다.")
         return
 
     try:
@@ -1049,7 +1089,10 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
         upd(cached=cached)
         log(f"   모델 {'재사용' if cached else '적재'} {time.time() - t_load:.1f}초")
     except Exception as e:
-        fail(f"모델을 불러오지 못했다. {e}")
+        fail(f"모델을 불러오지 못했다. {e}",
+             hint=("GPU를 쓸 수 없다. 설정에서 기기를 cpu 로 바꾸거나 진단 화면을 확인해달라."
+                   if is_cuda_error(e) else
+                   "모델을 처음 받는 중이라면 인터넷 연결을 확인해달라."))
         return
 
     diarize = bool(opt.get("diarize"))
@@ -1089,7 +1132,8 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
         else:
             segments, info = model.transcribe(path, **kwargs)
     except Exception as e:
-        fail(f"음원을 읽지 못했다. {e}")
+        fail(f"음원을 읽지 못했다. {e}",
+             hint="파일이 손상됐거나 지원하지 않는 형식일 수 있다. 다른 파일로 확인해달라.")
         return
 
     dur = float(getattr(info, "duration", 0.0)) or probe_duration(path)
@@ -1124,15 +1168,20 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
                 sp = seg.end / el if el > 0 else 0
                 with LOCK:
                     JOB.update(processed=seg.end, segments=n, chars=chars, elapsed=el,
-                               speed=sp, eta=(dur - seg.end) / sp if sp > 0 else 0)
+                               speed=sp,
+                               eta=max(0.0, (dur - seg.end) / sp) if (sp > 0 and dur > 0) else 0.0)
                     JOB["tail"] = (JOB["tail"] + [{"t": hms(seg.start), "s": 0, "x": text}])[-14:]
     except Exception as e:
-        fail(f"전사 중 멈췄다. {e}")
+        fail(f"전사 중 멈췄다. {e}",
+             hint=("GPU를 쓸 수 없다. 설정에서 기기를 cpu 로 바꾸거나 진단 화면을 확인해달라."
+                   if is_cuda_error(e) else ""))
         return
 
     if not rows:
         upd(phase="")
-        fail("받아쓴 내용이 없다.", "cancelled" if stopped else "error")
+        fail("받아쓴 내용이 없다.", "cancelled" if stopped else "error",
+             hint=("" if stopped else
+                   "음원에 말소리가 없거나 무음 기준이 너무 높다. 자세히에서 무음 기준을 낮춰본다."))
         return
 
     # ── 2단계 · 화자 분리 ──
@@ -1164,10 +1213,13 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
         upd(message=(JOB["message"] + "  " if JOB["message"] else "")
             + (f"이름·용어 {n_fix}건 반영, {n_hold}건 보류. "
                f"{stem}_corrections.md 에서 확인해달라."))
-    upd(state="cancelled" if stopped else "done", outputs=made, phase="",
-        message=(JOB["message"] or ("중단했다. 여기까지는 저장돼 있다." if stopped
-                 else ("끝났다." if turns or not diarize
-                       else "끝났다. 화자 분리는 하지 못했다."))))
+    upd(outputs=made)
+    with LOCK:
+        note = JOB["message"]
+    finish_job("cancelled" if stopped else "done",
+               note or ("중단했다. 여기까지는 저장돼 있다." if stopped
+                        else ("끝났다." if turns or not diarize
+                              else "끝났다. 화자 분리는 하지 못했다.")))
 
     with LOCK:
         el, sp = JOB["elapsed"], JOB["speed"]
@@ -1235,6 +1287,9 @@ def finish_item(item: dict) -> None:
         HISTORY["items"] = ([rec] + HISTORY["items"])[:HISTORY_MAX]
         save_queue()
         save_history()
+    # 화면이 "다시 시도" 를 이력 경로로 걸 수 있게 방금 만든 기록을 가리켜 둔다.
+    with LOCK:
+        JOB["hid"] = rec["id"]
 
 
 def queue_loop() -> None:
@@ -1242,6 +1297,9 @@ def queue_loop() -> None:
     while True:
         item = None if STOP_ALL.is_set() else take_next()
         if item is None:
+            # 여기서 JOB 을 건드리지 않는다. 종료 상태를 푸는 것은 둘뿐이다 —
+            # 사람이 [닫기] 를 누르거나, 다음 항목이 transcribe() 로 덮어쓰거나.
+            # 실행기가 0.4초마다 지우면 사람이 읽기도 전에 알림이 사라진다.
             if _CACHE_USED[0] and time.time() - _CACHE_USED[0] > CACHE_IDLE_SEC:
                 _CACHE_USED[0] = 0.0
                 release_cache(f"{CACHE_IDLE_SEC // 60}분 동안 할 일이 없었다.")
@@ -1257,8 +1315,10 @@ def queue_loop() -> None:
             # 한 항목이 터져도 대기열은 멈추지 않는다.
             import traceback
             log("   실행기가 예외를 받았다 —\n" + traceback.format_exc())
-            with LOCK:
-                JOB.update(state="error", message=f"{type(e).__name__}: {e}")
+            finish_job("error",
+                       f"{os.path.basename(item['path'])} — 예상 못 한 오류. "
+                       f"{type(e).__name__}: {e}",
+                       "진단 화면의 기록에 자세한 내용이 남는다.")
         finish_item(item)
 
 
@@ -1522,7 +1582,11 @@ li.broken .ask{flex-basis:100%;font-size:13px;color:var(--warn);margin:0}
 
 .note{font-size:13px;color:var(--muted);margin-top:12px}
 .err{color:var(--warn);font-size:14px;margin-top:12px;padding:9px 12px;
-     background:#F9EFE9;border-left:3px solid var(--warn);border-radius:2px}
+     background:#F9EFE9;border-left:3px solid var(--warn);border-radius:2px;
+     white-space:pre-line}
+.nobar{margin:0;font-family:var(--mono);font-size:13px;color:var(--muted);
+       padding:9px 0}
+ul.list li .bad{color:var(--warn);font-weight:600}
 .err.ok{color:var(--ink);background:var(--signal-soft);border-left-color:var(--signal)}
 .out{margin-top:14px;font-family:var(--mono);font-size:13px}
 .out a{color:var(--signal)}
@@ -1558,21 +1622,27 @@ li.broken .ask{flex-basis:100%;font-size:13px;color:var(--warn);margin:0}
   <div class="meter">
     <div><div class="rate" id="rate">—<small>× 실시간</small></div></div>
     <div class="stats">
-      <div class="stat"><b id="s_left">—</b><span>남은 시간</span></div>
-      <div class="stat"><b id="s_el">—</b><span>경과</span></div>
+      <div class="stat" id="s_left_box"><b id="s_left">—</b><span>남은 시간</span></div>
+      <div class="stat"><b id="s_el">—</b><span id="s_el_lab">경과</span></div>
       <div class="stat"><b id="s_ch">0</b><span>글자</span></div>
     </div>
   </div>
   <p class="phase" id="phase"></p>
-  <div class="track"><div class="fill" id="fill"></div><div class="ticks" id="ticks"></div></div>
-  <div class="clock"><em id="c_now">0:00</em><span id="c_pct">0%</span><span id="c_end">—</span></div>
+  <div id="bar">
+    <div class="track"><div class="fill" id="fill"></div><div class="ticks" id="ticks"></div></div>
+    <div class="clock"><em id="c_now">0:00</em><span id="c_pct">0%</span><span id="c_end">—</span></div>
+  </div>
+  <p class="nobar hide" id="nobar">길이를 읽지 못했다. 진행 중이다.</p>
   <div class="tail" id="tail"></div>
   <p class="err hide" id="err"></p>
   <div class="out hide" id="out"></div>
   <p class="acts">
     <button class="ghost" id="cancel" type="button">현재 중단</button>
     <button class="ghost" id="stopall" type="button">전체 중지</button>
+    <button class="ghost hide" id="retry" type="button">다시 시도</button>
+    <button class="mini hide" id="dismiss" type="button">닫기</button>
   </p>
+  <p class="note hide" id="stopnote"></p>
 </section>
 
 <section id="qsec" class="hide">
@@ -1805,10 +1875,13 @@ $("#qlist").onclick = async e => {
 
 /* ── 기록 ── */
 function renderHistory(h){
-  $("#hlist").innerHTML = h.length ? h.map(r=>`<li data-id="${r.id}">
+  // 대기열에 다음 항목이 있으면 실패 사유가 화면에서 수 ms 만에 덮인다.
+  // 폴링이 900ms 이므로 사실상 못 본다. 기록에 사유가 남아야 하는 이유다.
+  $("#hlist").innerHTML = h.length ? h.map(r=>`<li data-id="${r.id}" title="${esc(r.message||"")}">
       <span class="nm">${esc(r.name)}</span>
       <span class="meta">${stamp(r.finished)} · ${hms(r.duration)} · ${(r.speed||0).toFixed(1)}×
-        ${r.speakers?` · 화자 ${r.speakers}명`:""}${r.state!=="done"?` · ${esc(r.state)}`:""}</span>
+        ${r.speakers?` · 화자 ${r.speakers}명`:""}${r.state==="error"?` · <span class="bad">실패</span>`
+        :r.state==="cancelled"?` · <span class="bad">중단</span>`:""}</span>
       <span class="btns">
         <button data-act="open" ${r.outputs&&r.outputs.length?"":"disabled"}>열기</button>
         <button data-act="again">같은 설정으로</button>
@@ -1844,14 +1917,22 @@ function drawTicks(dur){
 }
 function renderJob(j, hasQueue){
   const busy = ["loading","running","diarizing","merging"].includes(j.state);
-  $("#live").classList.toggle("hide", !busy && !hasQueue && j.state==="idle");
-  if(j.state==="idle" && !hasQueue) return;
-  const pct = j.duration ? Math.min(100, j.processed/j.duration*100) : 0;
+  const term = ["done","error","cancelled"].includes(j.state);
+  $("#live").classList.toggle("hide", !busy && !term && !hasQueue);
+  if(!busy && !term && !hasQueue) return;
+  window._job = j;
+  const known = j.duration > 0;
+  $("#bar").classList.toggle("hide", !known);
+  $("#nobar").classList.toggle("hide", known || !busy || j.state === "loading");
+  const pct = known ? Math.min(100, j.processed/j.duration*100) : 0;
   $("#nowfile").textContent = j.stem ? base(j.file) : "";
   $("#rate").innerHTML = (j.speed ? j.speed.toFixed(1) : "—") + "<small>× 실시간</small>";
-  $("#s_left").textContent = j.state==="running" && j.eta ? hms(j.eta) : "—";
+  $("#s_left").textContent = j.state==="running" && j.eta > 0 ? hms(j.eta) : "—";
   $("#s_el").textContent = hms(j.elapsed);
   $("#s_ch").textContent = (j.chars||0).toLocaleString();
+  // 끝난 뒤에는 남은 시간이 뜻이 없다. 경과는 총 소요로 이름을 바꾼다.
+  $("#s_left_box").classList.toggle("hide", term);
+  $("#s_el_lab").textContent = term ? "총 소요" : "경과";
   $("#fill").style.width = pct + "%";
   $("#c_now").textContent = hms(j.processed);
   $("#c_pct").textContent = pct.toFixed(1) + "%";
@@ -1869,7 +1950,7 @@ function renderJob(j, hasQueue){
       `<p><time>${s.t}</time>${s.s?`<span class="spk s${s.s}">화자${s.s}</span>`:``}
          <span>${esc(s.x)}</span></p>`).join("");
     if (j.segments !== lastSeg){ $("#tail").scrollTop = $("#tail").scrollHeight; lastSeg = j.segments; }
-  }
+  } else { $("#tail").innerHTML = ""; lastSeg = -1; }
   $("#err").classList.toggle("hide", !j.message);
   if (j.message){ $("#err").textContent = j.message;
     $("#err").classList.toggle("ok", j.state==="done"); }
@@ -1878,7 +1959,12 @@ function renderJob(j, hasQueue){
   if (j.state==="done" && outs.length)
     $("#out").innerHTML = "저장 위치<br>" + outs.map(o=>
       `<a href="/open?p=${encodeURIComponent(o.path)}" target="_blank">${esc(o.path)}</a>`).join("<br>");
-  $("#cancel").disabled = !busy;
+
+  // 버튼을 상태에 묶는다. 실패한 작업에 "현재 중단" 은 뜻이 없다.
+  $("#cancel").classList.toggle("hide", !busy);
+  $("#stopall").classList.toggle("hide", !busy && !hasQueue);
+  $("#retry").classList.toggle("hide", !(j.hid && (j.state==="error" || j.state==="cancelled")));
+  $("#dismiss").classList.toggle("hide", !term);
 }
 
 /* ── 폴링 ── */
@@ -1903,6 +1989,15 @@ async function poll(){
   renderHistory(s.history);
   $("#stopall").textContent = s.stopall ? "대기열 재개" : "전체 중지";
   $("#stopall").classList.toggle("on", s.stopall);
+  // 눌렀을 때 무슨 일이 일어나는지 말로 알린다. 안 듣는 것처럼 보이면 안 된다.
+  const left = s.queue.filter(x=>x.state==="waiting").length;
+  $("#stopnote").classList.toggle("hide", !s.stopall);
+  if (s.stopall) $("#stopnote").textContent =
+    `지금 것을 끝내면 멈춘다. 남은 ${left}건은 그대로 있다.`
+    + (busyNow(s.job) ? "  즉시 멈추려면 [현재 중단] 을 함께 누른다." : "");
+  // 전체 중지를 켠 채 대기열이 비면 #live 가 숨어 재개 단추까지 사라진다.
+  // 서버는 멈춘 상태 그대로인데 그것을 푸는 유일한 단추가 안 보이면 갇힌다.
+  if (s.stopall) $("#live").classList.remove("hide");
   const busy = ["loading","running","diarizing","merging"].includes(s.job.state);
   timer = setTimeout(poll, busy ? 900 : 3000);
 }
@@ -1932,10 +2027,20 @@ $("#diarize").onchange = async () => {
   $("#dia_note").textContent = r.why;
   $("#dia_note").classList.toggle("bad", !r.ok);
 };
+const busyNow = j => ["loading","running","diarizing","merging"].includes(j.state);
 $("#cancel").onclick = () => post("/cancel",{});
 $("#stopall").onclick = async () => {
   const s = await (await fetch("/state")).json();
   await post("/queue/stopall",{on:!s.stopall}); poll();
+};
+$("#dismiss").onclick = async () => { await post("/job/dismiss",{}); poll(); };
+$("#retry").onclick = async () => {
+  const j = window._job || {};
+  if(!j.hid) return;
+  const r = await post("/history/again",{id:j.hid});
+  if(r.error){ alert(r.error); return; }
+  await post("/job/dismiss",{});
+  poll();
 };
 $("#add").onclick = async () => {
   const list = chosen();
@@ -2394,6 +2499,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     SETTINGS["presets"] = b["presets"]
                 save_settings()
                 return self._json(SETTINGS)
+
+        if u.path == "/job/dismiss":
+            # 끝난 알림을 화면에서 내린다. 도는 중이면 건드리지 않는다.
+            with LOCK:
+                if JOB["state"] not in TERMINAL:
+                    return self._json({"error": "아직 도는 중이다."})
+                JOB.update(state="idle", phase="", message="", eta=0.0,
+                           file="", stem="", outputs=[], tail=[],
+                           processed=0.0, duration=0.0, speed=0.0, elapsed=0.0,
+                           segments=0, chars=0, speakers=0, dia_pct=0.0,
+                           qid="", hid="")
+            return self._json({"ok": True})
 
         if u.path == "/outdir/check":
             return self._json(check_outdir(self._body().get("path", "")))

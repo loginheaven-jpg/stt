@@ -23,12 +23,13 @@ $env:PORT = "8766"; python app.py  # 포트를 바꿔 띄운다
 python app.py --selftest           # fix_terms 16개 사례. 교정 로직을 고쳤으면 먼저 돌린다
 python app.py --shortcut           # start.vbs 와 바탕화면 바로가기를 만든다
 python setup.py                    # 설치기. 더블클릭용이지만 명령창에서도 돈다
+python tests/state_test.py         # 종료 상태 정합 36건. 음원이 필요 없다
 python tests/queue_test.py         # 대기열·이력·설정·캐시 36건
 python tests/screen_test.py        # 화면과 백엔드의 접합면 34건
-python tests/setup_test.py         # 설치기 갈래 24건
+python tests/setup_test.py         # 설치기 갈래 37건
 ```
 
-**`app.py`나 `setup.py`를 고쳤으면 넷을 다 돌린다.** 음원이 없으면 그 절만 건너뛴다. 시험은 임시 폴더에서 돌고 `env.local`과 실제 `data/`를 건드리지 않는다.
+**`app.py`나 `setup.py`를 고쳤으면 다섯을 다 돌린다.** 음원이 없으면 그 절만 건너뛴다. 시험은 임시 폴더에서 돌고 `env.local`과 실제 `data/`를 건드리지 않는다.
 
 회귀 시험 — `app.py`를 고쳤으면 매번 돌린다. **절차와 기준값은 [baseline/README.md](baseline/README.md)에 있다.** R1(정확도)과 R2(구조) 둘이다.
 
@@ -92,6 +93,30 @@ STATE_LOCK 위 셋을 감싼다
 
 효과가 크다 — 화자 분리를 켠 R1 3회에서 **15.69초 → 1.12초**다. Whisper 적재와 pyannote 파이프라인 적재를 함께 아낀다. **R2의 배속이 이 캐시의 회귀 감지기다.**
 
+### 작업 끝맺기 — `finish_job()`
+
+**모든 종료 경로가 이 함수 하나를 지난다.** 일곱이다 — 엔진 없음 · 모델 실패 · 음원 실패 · 전사 중 실패 · 내용 없음 · 정상 완료 · 실행기 예외.
+
+흩어져 있던 시절에 실제로 겪은 증상이다. 오류 띠가 떠 있는데 `받아쓰는 중`이 남고, 실패한 작업에 `현재 중단` 버튼이 붙고, 새로 고쳐도 그대로였다. **종료 상태에서 `phase`가 남으면 화면은 진행 중으로 읽는다.**
+
+| 필드 | 종료 시 |
+|---|---|
+| `phase` | `""` |
+| `eta` | `0` |
+| `processed` | **실패 지점 유지.** 어디서 멈췄는지가 단서다 |
+| `processed` (done) | `duration`으로 맞춘다. 끝난 일이 98%로 남으면 도구를 못 믿는다 |
+| `speed` · `file` · `stem` | 유지 |
+
+오류 문구는 세 조각이다 — **무엇이 · 왜 · 무엇을 하면 되는지.** `fail()`이 파일명을 앞에 붙이고 `hint`를 `→` 뒤에 붙인다. CUDA 계열은 `is_cuda_error()`로 가려 기기 안내를 준다.
+
+`POST /job/dismiss`가 끝난 알림을 화면에서 내린다. 도는 중이면 거부한다.
+
+`tests/state_test.py`가 이 자리를 지킨다. 모델을 가짜로 갈아 끼워 **음원 없이** 실패를 흉내 낸다.
+
+**`queue_loop()`의 놀이 분기에서 `JOB`을 건드리지 않는다.** 0.4초마다 도는 자리라 종료 상태를 지우면 사람이 읽기 전에 알림이 사라진다. 종료 상태를 푸는 것은 둘뿐이다 — 사람이 `닫기`를 누르거나, 다음 항목이 `transcribe()`로 덮거나.
+
+`transcribe()`의 여는 `upd()`는 **`duration`과 `hid`도 되돌린다.** 앞 작업 값이 남으면 막대가 엉뚱한 길이로 그려지고 `다시 시도`가 앞 파일을 담는다.
+
 ### 전사 3단계 — [app.py:627](app.py#L627) `transcribe()`
 
 1. **전사** — `WhisperModel.transcribe()`. 구간마다 `f.write()` + `f.flush()`로 즉시 저장한다. 2시간 50분에 죽어도 거기까지 남는다.
@@ -125,7 +150,7 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 | | 경로 |
 |---|---|
 | GET | `/` `/files` `/diacheck` `/diag` `/version` `/status` `/log?n=` `/open?p=` `/queue` `/history?n=` `/settings` `/state` |
-| POST | `/start` `/cancel` `/queue/add` `/queue/move` `/queue/remove` `/queue/resume` `/queue/stopall` `/history/remove` `/history/again` `/settings` `/outdir/check` `/shortcut` `/quit` |
+| POST | `/start` `/cancel` `/queue/add` `/queue/move` `/queue/remove` `/queue/resume` `/queue/stopall` `/history/remove` `/history/again` `/settings` `/outdir/check` `/job/dismiss` `/shortcut` `/quit` |
 
 **`self._body()`는 한 번만 부른다.** 두 번 부르면 `rfile`이 비어 있어 요청이 영원히 멈춘다. `/history/again`에서 실제로 겪었다.
 
@@ -178,6 +203,29 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 보완서가 바꾼 것 — §1-3 비교표는 근거 자료일 뿐 인수 조건이 아니다 · §9-1은 폐기하고 R1·R2로 대체한다 · `stt_bench.py`는 채점 로직만 동결이고 인코딩 수정은 허용한다 · 0단계(기준선 동결)를 맨 앞에 넣는다.
 
 **Phase 1은 끝났다.** 0단계(기준선·로깅) · 1단계(대기열·이력·설정·모델 캐시) · 2·3단계(화면·무창 실행·종료·진단) · 4단계(`setup.py`·`설치안내.md`)다.
+
+## Phase 2-0 — GPU PC에서 드러난 것
+
+지시서는 [stt_spec_phase2_0.md](stt_spec_phase2_0.md), 검토 결과는 [검토의견_2-0.md](검토의견_2-0.md)다. **반박 7건과 그 판정이 검토의견에 남아 있다.** 왜 지시서가 지금 모습이 됐는지는 거기서 본다.
+
+새 PC에서 둘이 드러났다 — GPU가 있는데 `cublas64_12.dll` 을 못 찾아 전사가 죽는 것, 그리고 실패한 뒤 화면 상태가 어긋나는 것.
+
+**실측으로 확정한 것 셋.** 뒤집기 전에 읽는다.
+
+- **`WhisperModel(device="cuda")` 생성만으로는 CUDA 라이브러리를 부르지 않는다.** 실제 음성을 인코딩할 때 20개가 적재된다. 무음은 인코더를 돌리지 않아 탐침으로 쓸 수 없다
+- 새 PC의 오류는 **전사 중**에 났다. `전사 중 멈췄다`와 `모델을 불러오지 못했다`를 구분해 둔 덕에 문구만으로 지점이 확정됐다
+- 이 PC는 `nvidia` 휠이 없고 `torch/lib`에서 DLL을 얻는다. `import faster_whisper`가 `torch`를 끌어오는 **부작용에 우연히 기대고 있다**
+
+| 순서 | 내용 | 상태 |
+|---|---|---|
+| 1 | §2 실패 상태 정합 · 진행 막대 100% · 종료 후 표시 | **끝났다** |
+| 2 | §3 대체 경로(전사 루프 감싸기) · DLL 등록 범위 확대 | 다음 |
+| 3 | §4 인디케이터 · 즉답 판정 · 탐침 | — |
+| 4 | §5 설치기 · 의존성 분리 | — |
+| 5 | §2-8 대기열 비우기 버튼 | — |
+| 6 | 문서 갱신 · 회귀 | — |
+
+**전체 중지의 뜻을 바꾸지 않는다.** "현재 항목을 끝내고 멈춘다"이고 대기열은 유지된다. 부분 산출물을 지우자는 안은 반려됐다 — 이 프로젝트의 안전장치 전부가 "중단해도 여기까지는 남는다"를 향해 있다. 대기열을 비우는 동작이 필요하면 **대기열 구역에 별도 버튼**으로 만들고, 그것도 산출물은 지우지 않는다.
 
 남은 것은 **깨끗한 PC에서의 설치 시험**이다. 문서만 보고 30분 안에 첫 전사가 되는지 — 가상머신이나 다른 PC가 필요해 사람이 한다.
 
