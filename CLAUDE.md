@@ -223,4 +223,4 @@ JSON 쓰기는 원자적으로 한다. 임시 파일에 쓴 뒤 `os.replace`. �
 - **git 저장소가 아니다.** 되돌릴 수 없으니 큰 수정 전에는 사본을 둔다.
 - `env.local`에 RTZR·CLOVA·OpenAI·HuggingFace 실키가 평문으로 들어 있다. 출력·로그·커밋에 값이 새지 않게 한다 (진단 화면도 길이만 표시한다).
 - 입출력은 전부 UTF-8. 한글 파일명이 깨지지 않아야 한다.
-- `sample_.wav`(180MB)·`sample2.wav`·`sample3.wav`는 시험 음원이다. 지우지 않는다.
+- `audio/sample3.wav`(26.7초)는 **R1 회귀 기준선 음원이다. 지우지 않는다.** 뿌리의 `sample3.wav`는 같은 파일의 사본이다. `sample_.wav`·`sample2.wav`·`sample2.txt`는 2026-08-14에 지웠다 — 회귀에 쓰지 않고 실존 인물의 녹음이었다.
