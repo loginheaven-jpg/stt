@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-14.5"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-14.6"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -371,10 +371,18 @@ _AUTO_DEV = [None]         # auto 가 마지막에 무엇으로 풀렸는지. �
 
 
 def register_cuda_dlls() -> list:
-    """CUDA DLL 폴더를 이 프로세스에 등록한다. 한 번만 돈다."""
+    """
+    CUDA DLL 폴더를 이 프로세스에 등록한다. 한 번만 돈다.
+
+    STT_NO_CUDA_DLL=1 이면 아무것도 하지 않는다. 고장 난 상태를 재현해
+    탐침이 실제로 실패하는지 보기 위한 손잡이다. 실패하지 않는 탐침은 쓸모가 없다.
+    """
     if getattr(register_cuda_dlls, "_done", False):
         return CUDA_DLL_DIRS
     register_cuda_dlls._done = True
+    if os.environ.get("STT_NO_CUDA_DLL") == "1":
+        log("   CUDA DLL 등록을 건너뛴다 (STT_NO_CUDA_DLL=1)")
+        return CUDA_DLL_DIRS
 
     import glob
     cands = []
@@ -409,6 +417,85 @@ def register_cuda_dlls() -> list:
     else:
         log("   CUDA DLL 폴더를 찾지 못했다. CPU 로 돈다.")
     return CUDA_DLL_DIRS
+
+
+# ─────────────────────────────────────────────────────────────
+# 기기 상태
+#
+# "이 PC 에 GPU 가 있는가" 와 "지금 무엇으로 도는가" 는 다른 질문이다.
+# 앞의 것은 즉답할 수 있고, 뒤의 것은 실제로 돌려 봐야 안다.
+#
+# 기동          get_cuda_device_count() 로 물리 GPU 유무만. 모델을 만들지 않는다
+# 첫 작업 후     실제 사용 가능 여부가 확정된다
+# 진단에서 누를 때  탐침을 돌린다
+#
+# 기동 시 탐침을 돌리지 않는다. 무창 실행에서 몇 초를 이유 없이 기다리게 된다.
+# ─────────────────────────────────────────────────────────────
+
+GPU = {"count": None, "usable": None, "why": "", "name": ""}
+PROBE_WAV = os.path.join(BASE, "tests", "probe.wav")
+
+
+def gpu_count() -> int:
+    """물리 GPU 개수. 즉답이다 — 모델을 만들지 않으므로 내려받기가 없다."""
+    if GPU["count"] is None:
+        try:
+            register_cuda_dlls()
+            import ctranslate2
+            GPU["count"] = int(ctranslate2.get_cuda_device_count())
+        except Exception as e:
+            GPU["count"] = 0
+            GPU["why"] = GPU["why"] or f"{type(e).__name__}: {e}"[:200]
+    return GPU["count"]
+
+
+def note_gpu(usable: bool, why: str = "") -> None:
+    """실제 결과로 판정을 갱신한다. 작업이 끝나거나 탐침이 돌면 불린다."""
+    GPU["usable"] = usable
+    if why:
+        GPU["why"] = why[:300]
+    elif usable:
+        GPU["why"] = ""
+
+
+def gpu_badge() -> dict:
+    """머리말에 늘 보이는 배지. 세 상태뿐이다."""
+    n = gpu_count()
+    if not n:
+        return {"state": "cpu", "label": "CPU만 사용", "why": GPU["why"], "count": 0}
+    if GPU["usable"] is False:
+        return {"state": "broken", "label": "GPU 있으나 사용 불가",
+                "why": GPU["why"], "count": n}
+    return {"state": "gpu", "label": "GPU 사용 가능", "why": "", "count": n}
+
+
+def gpu_probe() -> dict:
+    """
+    실제로 짧게 전사해 본다. **모델을 만드는 것만으로는 알 수 없다** —
+    CUDA 라이브러리는 실제 음성을 인코딩할 때 비로소 적재된다. 무음이나
+    잡음은 인코더를 돌리지 않아 탐침이 되지 못한다. tests/probe.wav 는
+    2.8초짜리 실제 음성이다.
+    """
+    if not os.path.isfile(PROBE_WAV):
+        return {"ok": False, "why": f"탐침 음원이 없다 — {PROBE_WAV}", "sec": 0.0}
+    if not gpu_count():
+        return {"ok": False, "why": "이 PC 에서 GPU 를 찾지 못했다.", "sec": 0.0}
+    t0 = time.time()
+    try:
+        with STATE_LOCK:
+            name = (SETTINGS.get("last") or {}).get("model") or DEFAULT_OPT["model"]
+        m, cached, dev, comp = get_whisper(name, "cuda", "int8")
+        segs, _ = m.transcribe(PROBE_WAV, language="ko", vad_filter=False)
+        n = sum(1 for _ in segs)          # 다 소진해야 인코더가 실제로 돈다
+        note_gpu(True)
+        log(f"   GPU 탐침 통과 — {time.time() - t0:.1f}초 · 구간 {n}개")
+        return {"ok": True, "sec": round(time.time() - t0, 2), "segments": n,
+                "device": dev, "model": name, "cached": cached}
+    except Exception as e:
+        why = f"{type(e).__name__}: {e}"
+        note_gpu(False, why)
+        log(f"   GPU 탐침 실패 — {why[:200]}")
+        return {"ok": False, "why": why[:400], "sec": round(time.time() - t0, 2)}
 
 
 def get_whisper(model: str, device: str, compute: str):
@@ -1298,11 +1385,15 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
     for attempt in (1, 2):
         try:
             rows, dur, stopped = one_pass(dev, comp)
+            with LOCK:
+                if JOB.get("device") == "cuda":
+                    note_gpu(True)                # 실제로 끝냈으니 쓸 수 있는 것이 확실하다
             break
         except PassError as pe:
             cuda = is_cuda_error(pe.err)
             if attempt == 1 and want == "auto" and cuda:
                 note = f"GPU를 쓸 수 없어 CPU로 다시 시작했다. {str(pe.err)[:110]}"
+                note_gpu(False, str(pe.err))      # 배지가 "GPU 있으나 사용 불가" 로 바뀐다
                 log("   " + note)
                 try:
                     with open(tmp, "w", encoding="utf-8"):
@@ -1314,6 +1405,8 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
                     device_note=note, phase="CPU로 다시 시작한다")
                 dev, comp = "cpu", "int8"       # CPU 에서 float16 은 더 느리거나 실패한다
                 continue
+            if cuda:
+                note_gpu(False, str(pe.err))
             gpu_hint = "GPU를 쓸 수 없다. 설정에서 기기를 cpu 로 바꾸거나 진단 화면을 확인해달라."
             msg, hint = {
                 "model": (f"모델을 불러오지 못했다. {pe.err}",
@@ -1737,6 +1830,19 @@ li.broken .ask{flex-basis:100%;font-size:13px;color:var(--warn);margin:0}
      white-space:pre-line}
 .nobar{margin:0;font-family:var(--mono);font-size:13px;color:var(--muted);
        padding:9px 0}
+/* 기기 배지 — 기존 변수 안에서만 쓴다. 새 색을 만들지 않는다 */
+button.dev{font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:2px 8px;
+           border-radius:2px;background:transparent;font-weight:600;cursor:pointer;
+           color:var(--muted);border:1px solid var(--rule);align-self:center}
+button.dev.gpu{color:var(--signal);border-color:var(--signal)}
+button.dev.broken{color:var(--warn);border-color:var(--warn);background:#F9EFE9}
+button.dev:hover{background:var(--ground)}
+.chip{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.04em;
+      padding:2px 7px;border-radius:2px;margin-left:10px;vertical-align:6px;
+      color:var(--signal);border:1px solid var(--signal)}
+.chip.cpu{color:var(--muted);border-color:var(--rule)}
+.chip.broken{color:var(--warn);border-color:var(--warn)}
+.devnote{margin:6px 0 0;font-size:12px;color:var(--warn);font-family:var(--mono)}
 ul.list li .bad{color:var(--warn);font-weight:600}
 .err.ok{color:var(--ink);background:var(--signal-soft);border-left-color:var(--signal)}
 .out{margin-top:14px;font-family:var(--mono);font-size:13px}
@@ -1762,6 +1868,7 @@ ul.list li .bad{color:var(--warn);font-weight:600}
 <header>
   <h1>받아쓰기</h1>
   <span class="badge">이 PC에서만 처리 · 비용 없음</span>
+  <button class="dev" id="devbadge" type="button" title="눌러서 진단 화면을 연다">확인 중</button>
   <span class="ver">v__VER__</span>
   <button class="quit" id="quit" type="button">종료</button>
 </header>
@@ -1772,6 +1879,7 @@ ul.list li .bad{color:var(--warn);font-weight:600}
   <p class="nowfile" id="nowfile"></p>
   <div class="meter">
     <div><div class="rate" id="rate">—<small>× 실시간</small></div></div>
+    <span class="chip hide" id="jobdev"></span>
     <div class="stats">
       <div class="stat" id="s_left_box"><b id="s_left">—</b><span>남은 시간</span></div>
       <div class="stat"><b id="s_el">—</b><span id="s_el_lab">경과</span></div>
@@ -1779,6 +1887,7 @@ ul.list li .bad{color:var(--warn);font-weight:600}
     </div>
   </div>
   <p class="phase" id="phase"></p>
+  <p class="devnote hide" id="devnote"></p>
   <div id="bar">
     <div class="track"><div class="fill" id="fill"></div><div class="ticks" id="ticks"></div></div>
     <div class="clock"><em id="c_now">0:00</em><span id="c_pct">0%</span><span id="c_end">—</span></div>
@@ -2031,7 +2140,7 @@ function renderHistory(h){
   $("#hlist").innerHTML = h.length ? h.map(r=>`<li data-id="${r.id}" title="${esc(r.message||"")}">
       <span class="nm">${esc(r.name)}</span>
       <span class="meta">${stamp(r.finished)} · ${hms(r.duration)} · ${(r.speed||0).toFixed(1)}×
-        ${r.speakers?` · 화자 ${r.speakers}명`:""}${r.state==="error"?` · <span class="bad">실패</span>`
+        ${r.device?` · ${esc(r.device.toUpperCase())}`:""}${r.speakers?` · 화자 ${r.speakers}명`:""}${r.state==="error"?` · <span class="bad">실패</span>`
         :r.state==="cancelled"?` · <span class="bad">중단</span>`:""}</span>
       <span class="btns">
         <button data-act="open" ${r.outputs&&r.outputs.length?"":"disabled"}>열기</button>
@@ -2089,6 +2198,17 @@ function renderJob(j, hasQueue){
   $("#c_pct").textContent = pct.toFixed(1) + "%";
   $("#c_end").textContent = j.duration ? hms(j.duration) : "길이 미상";
   drawTicks(j.duration);
+
+  // 배속 숫자가 이 앱의 주인공이고, 기기가 그 숫자를 설명한다.
+  const dv = j.device || "";
+  $("#jobdev").classList.toggle("hide", !dv);
+  if (dv){
+    const fell = !!j.device_note;
+    $("#jobdev").textContent = fell ? "CPU · GPU 사용 불가" : dv.toUpperCase();
+    $("#jobdev").className = "chip" + (fell ? " broken" : dv === "cpu" ? " cpu" : "");
+  }
+  $("#devnote").classList.toggle("hide", !j.device_note);
+  if (j.device_note) $("#devnote").textContent = j.device_note;
 
   let ph = j.phase || "";
   if (j.state==="diarizing" && j.dia_pct) ph += " " + j.dia_pct.toFixed(0) + "%";
@@ -2149,6 +2269,14 @@ async function poll(){
   // 전체 중지를 켠 채 대기열이 비면 #live 가 숨어 재개 단추까지 사라진다.
   // 서버는 멈춘 상태 그대로인데 그것을 푸는 유일한 단추가 안 보이면 갇힌다.
   if (s.stopall) $("#live").classList.remove("hide");
+
+  // 머리말 배지. "이 PC에 GPU가 있는가" 와 "지금 무엇으로 도는가" 는 다른 질문이다.
+  const g = s.gpu || {};
+  $("#devbadge").textContent = g.label || "확인 중";
+  $("#devbadge").className = "dev" + (g.state === "gpu" ? " gpu"
+                                    : g.state === "broken" ? " broken" : "");
+  $("#devbadge").title = (g.why || "눌러서 진단 화면을 연다");
+
   const busy = ["loading","running","diarizing","merging"].includes(s.job.state);
   timer = setTimeout(poll, busy ? 900 : 3000);
 }
@@ -2241,6 +2369,28 @@ $("#diagbtn").onclick = async () => {
   rows.push(["기기", `${esc((d.device||{}).name)} ${(d.device||{}).cuda?'<span class="yes">GPU 사용</span>':""}`]);
   let h = `<h3>기본</h3><table>${rows.map(r=>`<tr><td class="k">${r[0]}</td><td class="v">${r[1]}</td></tr>`).join("")}</table>`;
 
+  const cu = d.cuda||{}, bd = cu.badge||{};
+  h += `<h3>그래픽카드</h3><table>
+    <tr><td class="k">지금 판정</td><td class="v">${
+      bd.state==="gpu"?`<span class="yes">${esc(bd.label)}</span>`
+      :bd.state==="broken"?`<span class="no">${esc(bd.label)}</span>`
+      :esc(bd.label||"")}</td></tr>
+    <tr><td class="k">물리 GPU</td><td class="v">${(cu.count||0)}개 · ${esc((d.device||{}).name||"")}</td></tr>
+    <tr><td class="k">실제 사용</td><td class="v">${
+      cu.usable===true?'<span class="yes">확인됐다</span>'
+      :cu.usable===false?'<span class="no">못 쓴다</span>'
+      :"아직 확인하지 않았다. 아래 탐침을 눌러본다"}</td></tr>`
+    + (cu.why?`<tr><td class="k">사유</td><td class="v">${esc(cu.why)}</td></tr>`:"")
+    + `<tr><td class="k">DLL 경로</td><td class="v">${
+      (cu.dll_dirs||[]).map(esc).join("<br>") || "등록된 곳이 없다"}</td></tr>
+    <tr><td class="k">탐침 음원</td><td class="v">${esc(cu.probe||"")} ${yn(cu.probe_exists)}</td></tr>
+    </table>
+    <p style="margin:10px 0 0">
+      <button class="mini" id="probe" type="button">탐침 실행</button>
+      <span id="proberes" style="margin-left:10px;font-family:var(--mono);font-size:12px"></span></p>
+    <p class="note" style="margin-top:6px">2.8초짜리 실제 음성을 GPU로 받아써 본다.
+      <b>모델을 만드는 것만으로는 알 수 없다</b> — CUDA는 실제로 인코딩할 때 비로소 불린다.</p>`;
+
   h += `<h3>패키지</h3><table>` + (d.packages||[]).map(p=>
     `<tr><td class="k">${esc(p.name)}${p.need?" (필수)":""}</td><td class="v">${
       p.ok?`<span class="yes">${esc(p.version)}</span>`:'<span class="no">없다</span>'}</td></tr>`).join("") + `</table>`;
@@ -2263,7 +2413,20 @@ $("#diagbtn").onclick = async () => {
 
   h += `<h3>최근 기록 200줄</h3><pre>${esc((d.log_lines||[]).join("\n") || "아직 없다.")}</pre>`;
   $("#dg").innerHTML = h;
+
+  const pb = $("#probe");
+  if (pb) pb.onclick = async () => {
+    pb.disabled = true;
+    $("#proberes").textContent = "돌리는 중… 모델을 처음 올리면 시간이 걸린다";
+    const r = await post("/gpu/probe", {});
+    pb.disabled = false;
+    $("#proberes").innerHTML = r.ok
+      ? `<span class="yes">통과 · ${r.sec}초 · ${esc(r.device||"")}</span>`
+      : `<span class="no">실패 · ${esc(r.why||"")}</span>`;
+    poll();
+  };
 };
+$("#devbadge").onclick = () => $("#diagbtn").click();
 $("#diagclose").onclick = () => $("#diagsec").classList.add("hide");
 
 poll();
@@ -2389,7 +2552,10 @@ def diagnose(force: bool = False) -> dict:
         register_cuda_dlls()
         import ctranslate2
         d["cuda"] = {"count": ctranslate2.get_cuda_device_count(),
-                     "dll_dirs": list(CUDA_DLL_DIRS)}
+                     "dll_dirs": list(CUDA_DLL_DIRS),
+                     "badge": gpu_badge(),
+                     "usable": GPU["usable"], "why": GPU["why"],
+                     "probe": PROBE_WAV, "probe_exists": os.path.isfile(PROBE_WAV)}
     except Exception as e:
         d["cuda"] = {"count": 0, "dll_dirs": list(CUDA_DLL_DIRS),
                      "error": f"{type(e).__name__}: {e}"[:200]}
@@ -2582,7 +2748,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "job": job, "queue": QUEUE["items"],
                     "stopall": STOP_ALL.is_set(),
                     "history": HISTORY["items"][:20],
-                    "settings": SETTINGS, "version": APP_VERSION})
+                    "settings": SETTINGS, "version": APP_VERSION,
+                    "gpu": gpu_badge()})
 
         return self._send(404, b"not found", "text/plain")
 
@@ -2662,6 +2829,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     SETTINGS["presets"] = b["presets"]
                 save_settings()
                 return self._json(SETTINGS)
+
+        if u.path == "/gpu/probe":
+            # 누를 때만 돈다. 기동 시에는 절대 부르지 않는다.
+            return self._json(gpu_probe())
 
         if u.path == "/job/dismiss":
             # 끝난 알림을 화면에서 내린다. 도는 중이면 건드리지 않는다.

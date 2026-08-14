@@ -360,6 +360,92 @@ else:
     skipped.append("DLL 경로")
     print("  건너뜀 DLL 경로   이 PC 에서 찾지 못했다")
 
+print("\n■ 16. GPU 탐침 — 고장 난 상태를 재현하는가\n")
+# 실패하지 않는 탐침은 쓸모가 없다. 갈래마다 실제로 실패하는지 본다.
+app.get_whisper = REAL_GET_WHISPER
+import wave  # noqa: E402
+
+check("탐침 음원이 있다", os.path.isfile(app.PROBE_WAV), app.PROBE_WAV)
+if os.path.isfile(app.PROBE_WAV):
+    with wave.open(app.PROBE_WAV) as wf:
+        sec = wf.getnframes() / wf.getframerate()
+        ch, sr = wf.getnchannels(), wf.getframerate()
+    check("2~3초다", 2.0 <= sec <= 3.5, f"{sec:.2f}초")
+    check("16kHz 모노다", (ch, sr) == (1, 16000), f"{ch}채널 {sr}Hz")
+    check("저장소에 넣을 만한 크기다", os.path.getsize(app.PROBE_WAV) < 200_000,
+          f"{os.path.getsize(app.PROBE_WAV):,}바이트")
+
+
+def reset_gpu(count=1):
+    app.GPU.update(count=count, usable=None, why="", name="")
+    app._WHISPER.update(key=None, obj=None)
+    app._AUTO_DEV[0] = None
+
+
+class BoomOnTranscribe:
+    """모델은 만들어지는데 추론에서 터진다. 진짜 사고가 이 모양이었다."""
+
+    def __init__(self, name, device=None, compute_type=None):
+        pass
+
+    def transcribe(self, path, **kw):
+        raise RuntimeError(CUDA_ERR)
+
+
+real_model2 = faster_whisper.WhisperModel
+faster_whisper.WhisperModel = BoomOnTranscribe
+try:
+    reset_gpu(1)
+    r = app.gpu_probe()
+    check("추론에서 터지면 탐침이 실패한다", r["ok"] is False, str(r.get("why", ""))[:60])
+    check("배지가 'GPU 있으나 사용 불가' 로 바뀐다",
+          app.gpu_badge()["state"] == "broken", app.gpu_badge()["label"])
+    check("사유를 남긴다", "cublas" in app.gpu_badge()["why"])
+finally:
+    faster_whisper.WhisperModel = real_model2
+
+reset_gpu(0)
+r = app.gpu_probe()
+check("GPU 가 없으면 탐침을 돌리지 않는다",
+      r["ok"] is False and "찾지 못했다" in r["why"], r.get("why", ""))
+check("배지가 'CPU만 사용'", app.gpu_badge()["state"] == "cpu", app.gpu_badge()["label"])
+
+app.GPU.update(count=None, usable=None, why="")
+app._WHISPER.update(key=None, obj=None)
+if app.gpu_count() > 0:
+    r = app.gpu_probe()
+    check("실제 탐침이 통과한다", r["ok"] is True,
+          f"{r.get('sec')}초 · {r.get('device')} · 구간 {r.get('segments')}개")
+    if r["ok"]:
+        check("배지가 'GPU 사용 가능'", app.gpu_badge()["state"] == "gpu")
+        check("구간이 실제로 나온다", r.get("segments", 0) >= 1)
+
+    # 무음을 탐침으로 쓰지 않는 이유.
+    #
+    # 실측 기록 — 이 PC 에서 CUDA 라이브러리 16개는 **import 시점에** 이미 올라온다.
+    # import faster_whisper 가 torch 를 끌어오고 torch 가 즉시 올리기 때문이다.
+    # 모델 생성에서도, 무음 추론에서도, 실제 음성 추론에서도 그 수는 16 그대로다.
+    # 즉 "무음은 CUDA 를 안 부른다" 는 이 기계에서 성립하지 않는다.
+    #
+    # 그래도 탐침은 실제 음성이어야 한다. 무음이 내는 것은 환각이라 통과·실패를
+    # 가릴 근거가 되지 못한다. 아래가 그것을 보인다.
+    import numpy as np  # noqa: E402
+    m, _, _, _ = app.get_whisper(app.DEFAULT_OPT["model"], "cuda", "int8")
+    quiet = [s.text.strip() for s in
+             m.transcribe(np.zeros(16000 * 3, dtype="float32"),
+                          language="ko", vad_filter=False)[0]]
+    spoken = [s.text.strip() for s in
+              m.transcribe(app.PROBE_WAV, language="ko", vad_filter=False)[0]]
+    print(f"     무음 3초  → {quiet}")
+    print(f"     탐침 2.8초 → {spoken}")
+    check("탐침은 알아들을 말을 낸다", any("안녕" in t for t in spoken), str(spoken))
+    check("무음이 내는 것은 탐침의 답과 다르다", quiet != spoken, str(quiet))
+
+else:
+    for n in ("실제 탐침", "무음 대조"):
+        skipped.append(n)
+        print(f"  건너뜀 {n}   이 PC 에서 GPU 를 찾지 못했다")
+
 print(f"\n{'=' * 60}")
 print(f"  통과 {len(ok)} · 실패 {len(bad)}"
       + (f" · 건너뜀 {len(skipped)}" if skipped else ""))
