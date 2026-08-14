@@ -144,6 +144,122 @@ check("마무리 안내가 있다", "더블클릭하면 시작된다" in out)
 check("음원 폴더를 알려준다", "audio 폴더에 넣는다" in out)
 shutil.rmtree(work, ignore_errors=True)
 
+print("\n■ 7. 화자 분리 모델 받기 — 갈래별로\n")
+import types  # noqa: E402
+
+
+def with_fake_pyannote(raiser):
+    """pyannote.audio 를 잠깐 가짜로 바꿔 끼운다. 끝나면 되돌린다."""
+    saved = {k: sys.modules.get(k) for k in ("pyannote", "pyannote.audio")}
+    pkg = types.ModuleType("pyannote")
+    mod = types.ModuleType("pyannote.audio")
+
+    class Pipeline:
+        @staticmethod
+        def from_pretrained(*a, **k):
+            return raiser()
+
+    mod.Pipeline = Pipeline
+    pkg.audio = mod
+    sys.modules["pyannote"] = pkg
+    sys.modules["pyannote.audio"] = mod
+    return saved
+
+
+def restore(saved):
+    for k, v in saved.items():
+        if v is None:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = v
+
+
+m = load()
+m.have = lambda mod: "1.0"
+
+m.env_token = lambda: ""
+m.steps.clear()
+with contextlib.redirect_stdout(io.StringIO()):
+    r = m.fetch_diarization("")
+check("토큰이 없으면 건너뛴다", r is False and m.steps[-1][1] == "skip")
+
+m.have = lambda mod: ""
+m.steps.clear()
+with contextlib.redirect_stdout(io.StringIO()):
+    r = m.fetch_diarization("hf_x")
+check("pyannote 가 없으면 건너뛴다", r is False and m.steps[-1][1] == "skip")
+
+m.have = lambda mod: "1.0"
+saved = with_fake_pyannote(lambda: (_ for _ in ()).throw(
+    RuntimeError("401 Client Error. Access to model is gated.")))
+m.steps.clear()
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    r = m.fetch_diarization("hf_x")
+restore(saved)
+out = buf.getvalue()
+check("약관 미동의를 짚어준다", "약관에 아직 동의하지 않았다" in out)
+check("동의하러 갈 주소를 준다", m.DIA_MODEL in out)
+check("받아쓰기는 된다고 알린다", "받아쓰기는 그대로 쓸 수 있다" in out)
+check("실패로 센다", r is False and m.steps[-1][1] == "fail")
+
+saved = with_fake_pyannote(lambda: object())
+m.steps.clear()
+with contextlib.redirect_stdout(io.StringIO()):
+    r = m.fetch_diarization("hf_x")
+restore(saved)
+check("받아지면 통과", r is True and m.steps[-1][1] == "ok")
+
+saved = with_fake_pyannote(lambda: None)
+m.steps.clear()
+with contextlib.redirect_stdout(io.StringIO()):
+    r = m.fetch_diarization("hf_x")
+restore(saved)
+check("None 을 돌려주면 거부로 본다", r is False and m.steps[-1][1] == "fail")
+
+m.env_token = lambda: "hf_from_env"
+saved = with_fake_pyannote(lambda: object())
+m.steps.clear()
+with contextlib.redirect_stdout(io.StringIO()):
+    r = m.fetch_diarization("")
+restore(saved)
+check("설치 화면에서 안 받았어도 env.local 토큰을 쓴다", r is True)
+
+print("\n■ 8. 모델 단계가 둘을 다 다루는가\n")
+m = load()
+m.have = lambda mod: "1.0"
+m.fetch_whisper = lambda: m.done("받아쓰기 모델", "ok", "가짜")
+m.fetch_diarization = lambda t: m.done("화자 분리 모델", "ok", "가짜")
+m.steps.clear()
+it = iter(["y"])
+builtins_input = builtins.input
+builtins.input = lambda p="": next(it, "")
+with contextlib.redirect_stdout(io.StringIO()):
+    m.step_model(True, "hf_x")
+builtins.input = builtins_input
+names = [n for n, _, _ in m.steps]
+check("받겠다고 하면 둘 다 받는다", names == ["받아쓰기 모델", "화자 분리 모델"], str(names))
+
+m.steps.clear()
+it = iter(["n"])
+builtins.input = lambda p="": next(it, "")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    m.step_model(True, "hf_x")
+builtins.input = builtins_input
+check("건너뛰면 둘 다 건너뛴다",
+      [s2 for _, s2, _ in m.steps] == ["skip", "skip"], str(m.steps))
+check("화자 분리 크기를 미리 알린다", "31MB" in buf.getvalue())
+
+m.steps.clear()
+it = iter(["y"])
+builtins.input = lambda p="": next(it, "")
+with contextlib.redirect_stdout(io.StringIO()):
+    m.step_model(False, "")
+builtins.input = builtins_input
+check("화자 분리를 안 쓰면 그 모델은 건드리지 않는다",
+      [n for n, _, _ in m.steps] == ["받아쓰기 모델"], str(m.steps))
+
 print(f"\n{'=' * 60}")
 print(f"  통과 {len(ok)} · 실패 {len(bad)}")
 for b in bad:

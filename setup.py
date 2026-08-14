@@ -145,10 +145,10 @@ def step_pyannote() -> bool:
 
     설치가 실패해도 토큰은 받아둔다. 나중에 pip 만 다시 돌리면 되도록.
     """
-    title(3, 9, "화자 분리를 쓸 것인가")
+    title(3, 9, "화자 분리")
     say("화자 분리는 '화자1', '화자2' 로 말한 사람을 나눠 적는 기능이다.")
-    say("코칭이나 인터뷰 녹음이면 쓸모가 크고, 강의 녹음이면 없어도 된다.")
-    say("쓰려면 약 2.5GB 를 더 내려받는다.")
+    say("이 도구의 기본 기능이다. 특별한 이유가 없으면 그대로 쓴다.")
+    say("쓰려면 약 2.5GB 를 더 내려받는다. 혼자 말하는 강의 녹음만 다룰 거면 빼도 된다.")
     print()
     if not ask("화자 분리를 쓸까?", True):
         done("화자 분리", SKIP, "쓰지 않기로 했다. 나중에 다시 돌리면 된다")
@@ -228,28 +228,87 @@ def step_env(tok: str) -> bool:
     return True
 
 
-def step_model() -> bool:
-    title(6, 9, "받아쓰기 모델 미리 받기")
+def env_token() -> str:
+    """설치 화면에서 받지 않았어도 env.local 에 이미 있을 수 있다."""
+    try:
+        sys.path.insert(0, BASE)
+        import app
+        app.load_env()
+        return app.hf_token()
+    except Exception:
+        return ""
+
+
+def fetch_whisper() -> bool:
     if not have("faster_whisper"):
-        done("모델 내려받기", SKIP, "엔진이 없어 건너뛴다")
+        done("받아쓰기 모델", SKIP, "엔진이 없어 건너뛴다")
         return False
-    say(f"{MODEL_NAME} 모델은 약 1.6GB 다.")
-    say("지금 받아두면 첫 실행이 빠르다. 건너뛰면 처음 돌릴 때 받는다.")
-    print()
-    if not ask("지금 받을까?", True):
-        done("모델 내려받기", SKIP, "건너뛰었다. 첫 실행 때 받는다")
-        return False
-    say("내려받는 중이다. 진행 표시가 멈춘 것처럼 보여도 기다린다.")
+    say(f"받아쓰기 모델 {MODEL_NAME} 를 받는다. 약 1.6GB 다.")
     print()
     try:
         from faster_whisper import WhisperModel
         WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
-        done("모델 내려받기", OK, MODEL_NAME)
+        done("받아쓰기 모델", OK, MODEL_NAME)
         return True
     except Exception as e:
-        done("모델 내려받기", FAIL, f"{type(e).__name__}: {e}")
+        done("받아쓰기 모델", FAIL, f"{type(e).__name__}: {e}")
         say("첫 실행 때 다시 받으므로 큰 문제는 아니다.")
         return False
+
+
+def fetch_diarization(tok: str) -> bool:
+    """화자 분리 모델도 여기서 받는다. 첫 작업 때 받으면 멈춘 것처럼 보인다."""
+    if not have("pyannote.audio"):
+        done("화자 분리 모델", SKIP, "pyannote.audio 가 없어 건너뛴다")
+        return False
+    tok = tok or env_token()
+    if not tok:
+        done("화자 분리 모델", SKIP, "토큰이 없어 건너뛴다")
+        return False
+    print()
+    say("화자 분리 모델을 받는다. 약 31MB 다.")
+    print()
+    try:
+        from pyannote.audio import Pipeline
+        try:
+            pipe = Pipeline.from_pretrained(DIA_MODEL, token=tok)
+        except TypeError:                      # 3.x 계열은 인자 이름이 다르다
+            pipe = Pipeline.from_pretrained(DIA_MODEL, use_auth_token=tok)
+        if pipe is None:
+            raise RuntimeError("모델 접근이 거부됐다")
+        done("화자 분리 모델", OK, DIA_MODEL)
+        return True
+    except Exception as e:
+        msg = str(e)
+        done("화자 분리 모델", FAIL, f"{type(e).__name__}: {msg[:120]}")
+        print()
+        if any(k in msg.lower() for k in ("gated", "401", "403", "access", "authoriz")):
+            say("거의 이 이유다 — 모델 약관에 아직 동의하지 않았다.")
+            say(f"  https://huggingface.co/{DIA_MODEL}")
+            say("에 로그인해서 들어가면 동의 단추가 있다. 누른 뒤 이 파일을 다시 돌린다.")
+        else:
+            say("토큰이 Read 권한인지, 인터넷이 되는지 본다.")
+        say("받아쓰기는 그대로 쓸 수 있다. 화자 분리만 못 한다.")
+        return False
+
+
+def step_model(want_dia: bool, tok: str) -> bool:
+    title(6, 9, "모델 미리 받기")
+    say("받아쓰기 모델 약 1.6GB"
+        + (" · 화자 분리 모델 약 31MB" if want_dia else "") + " 를 받는다.")
+    say("지금 받아두면 첫 실행이 바로 시작된다.")
+    say("건너뛰면 처음 돌릴 때 받느라 한참 멈춘 것처럼 보인다.")
+    print()
+    if not ask("지금 받을까?", True):
+        done("받아쓰기 모델", SKIP, "건너뛰었다. 첫 실행 때 받는다")
+        if want_dia:
+            done("화자 분리 모델", SKIP, "건너뛰었다. 첫 작업 때 받는다")
+        return False
+    say("내려받는 중이다. 진행 표시가 멈춘 것처럼 보여도 기다린다.")
+    print()
+    a = fetch_whisper()
+    b = fetch_diarization(tok) if want_dia else True
+    return a and b
 
 
 def step_dirs() -> bool:
@@ -327,7 +386,7 @@ def main() -> int:
     tok = step_token() if want_dia else ""
     if want_dia:
         step_env(tok)
-    step_model()
+    step_model(want_dia, tok)
     step_dirs()
     step_shortcut()
     step_summary()
