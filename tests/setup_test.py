@@ -260,6 +260,78 @@ builtins.input = builtins_input
 check("화자 분리를 안 쓰면 그 모델은 건드리지 않는다",
       [n for n, _, _ in m.steps] == ["받아쓰기 모델"], str(m.steps))
 
+print("\n■ 9. 그래픽카드 단계\n")
+
+
+class FakeApp:
+    def __init__(self, smi):
+        self._smi = smi
+        self.PROBE_WAV = os.path.join(BASE, "tests", "probe.wav")
+
+    def nvidia_smi(self):
+        return self._smi
+
+    def gpu_report(self, probe=False):
+        return [("드라이버", "ok", "가짜"), ("시험 전사", "skip", "가짜")]
+
+
+def gpu_case(smi, answers):
+    m = load()
+    m.load_app = lambda: FakeApp(smi)
+    m.pip_install = lambda *a: (True, "")
+    m.steps.clear()
+    it = iter(answers)
+    orig = builtins.input
+    builtins.input = lambda p="": next(it, "")
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            r = m.step_gpu()
+    finally:
+        builtins.input = orig
+    return r, m.steps[-1] if m.steps else None, buf.getvalue()
+
+
+NO_GPU = {"ok": False, "why": "nvidia-smi 가 없다. NVIDIA 드라이버가 깔려 있지 않다."}
+OLD = {"ok": True, "cuda": "11.8", "name": "NVIDIA GeForce GTX 1060", "old": True,
+       "why": "드라이버가 낡았다. CUDA 12.0 이상이 필요하다."}
+GOOD = {"ok": True, "cuda": "12.6", "name": "NVIDIA GeForce RTX 3060", "old": False,
+        "why": ""}
+
+r, st, out = gpu_case(NO_GPU, [])
+check("GPU 가 없으면 건너뛴다", r is False and st[1] == "skip", str(st))
+check("CPU 로 동작한다고 알린다", "CPU 로 동작한다" in out)
+
+r, st, out = gpu_case(OLD, [])
+check("드라이버가 낡으면 못 했다로 센다", r is False and st[1] == "fail", str(st))
+check("CUDA 12.0 이상이 필요하다고 알린다", "12.0 이상" in out)
+check("무엇을 하면 되는지 알린다", "드라이버를 갱신" in out)
+
+r, st, out = gpu_case(GOOD, ["y"])
+check("GPU 가 있으면 받는다", r is True and st[1] == "ok", str(st))
+check("용량과 이득을 미리 알린다", "700MB" in out and "20배" in out)
+
+r, st, out = gpu_case(GOOD, ["n"])
+check("싫다고 하면 건너뛴다 — 실패가 아니다", r is False and st[1] == "skip", str(st))
+
+r, st, out = gpu_case(GOOD, [""])
+check("Enter 만 쳐도 받는다", r is True and st[1] == "ok", str(st))
+
+print("\n■ 10. 의존성 파일\n")
+for f, must in (("requirements.txt", "faster-whisper>="),
+                ("requirements-gpu.txt", "nvidia-cudnn-cu12>=9"),
+                ("requirements.lock", "faster-whisper==")):
+    p = os.path.join(BASE, f)
+    body = open(p, encoding="utf-8").read() if os.path.isfile(p) else ""
+    check(f"{f} 가 있다", bool(body))
+    check(f"{f} 에 {must}", must in body)
+check("설치용은 하한만 건다", "==" not in open(
+    os.path.join(BASE, "requirements.txt"), encoding="utf-8").read())
+for f in ("LICENSE", "NOTICE"):
+    check(f"{f} 가 있다", os.path.isfile(os.path.join(BASE, f)))
+check("NOTICE 가 모델 라이선스를 밝힌다",
+      "CC-BY-4.0" in open(os.path.join(BASE, "NOTICE"), encoding="utf-8").read())
+
 print(f"\n{'=' * 60}")
 print(f"  통과 {len(ok)} · 실패 {len(bad)}")
 for b in bad:

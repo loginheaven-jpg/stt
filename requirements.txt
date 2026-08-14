@@ -1,0 +1,12 @@
+# 받아쓰기 — 설치용. setup.py 가 이 파일로 깐다.
+#
+# 하한만 건다. 정확 고정은 requirements.lock 이 따로 한다.
+# 파이썬 3.13·3.14 에서 정확 고정 버전은 휠이 없어 설치가 실패할 수 있다.
+# 초보자가 넘는 관문을 하나 더 만들지 않는다.
+
+faster-whisper>=1.2
+
+# 화자 분리는 선택이다. setup.py 가 물어보고 따로 깐다. 약 2.5GB.
+#   pip install "pyannote.audio>=4.0" torch
+#
+# 그래픽카드는 requirements-gpu.txt 를 본다.

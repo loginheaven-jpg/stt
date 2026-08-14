@@ -104,7 +104,7 @@ def have(mod: str) -> str:
 # ─────────────────────────────────────────────────────────────
 
 def step_python() -> bool:
-    title(1, 9, "파이썬 확인")
+    title(1, 10, "파이썬 확인")
     v = sys.version_info
     say(f"파이썬 {v.major}.{v.minor}.{v.micro}")
     say(f"위치 {sys.executable}")
@@ -123,13 +123,15 @@ def step_python() -> bool:
 
 
 def step_whisper() -> bool:
-    title(2, 9, "받아쓰기 엔진 설치")
+    title(2, 10, "받아쓰기 엔진 설치")
     v = have("faster_whisper")
     if v:
         done("faster-whisper", True, f"이미 있다 ({v})")
         return True
     say("faster-whisper 를 내려받는다. 몇 분 걸린다.")
-    ok, why = pip_install("faster-whisper")
+    req = os.path.join(BASE, "requirements.txt")
+    ok, why = (pip_install("-r", req) if os.path.isfile(req)
+               else pip_install("faster-whisper"))
     if ok and have("faster_whisper"):
         done("faster-whisper", True, have("faster_whisper"))
         return True
@@ -145,7 +147,7 @@ def step_pyannote() -> bool:
 
     설치가 실패해도 토큰은 받아둔다. 나중에 pip 만 다시 돌리면 되도록.
     """
-    title(3, 9, "화자 분리")
+    title(3, 10, "화자 분리")
     say("화자 분리는 '화자1', '화자2' 로 말한 사람을 나눠 적는 기능이다.")
     say("이 도구의 기본 기능이다. 특별한 이유가 없으면 그대로 쓴다.")
     say("쓰려면 약 2.5GB 를 더 내려받는다. 혼자 말하는 강의 녹음만 다룰 거면 빼도 된다.")
@@ -170,7 +172,7 @@ def step_pyannote() -> bool:
 
 
 def step_token() -> str:
-    title(4, 9, "화자 분리 토큰")
+    title(4, 10, "화자 분리 토큰")
     say("화자 분리를 쓰려면 HuggingFace 토큰이 필요하다. 무료다.")
     print()
     say("  1) huggingface.co 에 가입한다")
@@ -196,7 +198,7 @@ def step_token() -> str:
 
 
 def step_env(tok: str) -> bool:
-    title(5, 9, "설정 파일에 저장")
+    title(5, 10, "설정 파일에 저장")
     if not tok:
         # 토큰이 없으면 파일을 아예 건드리지 않는다. 기존 값이 있을 수 있다.
         done("env.local", SKIP, "저장할 토큰이 없어 파일을 건드리지 않았다")
@@ -237,6 +239,79 @@ def env_token() -> str:
         return app.hf_token()
     except Exception:
         return ""
+
+
+def load_app():
+    """app.py 를 빌려 쓴다. 점검 로직을 두 벌로 두지 않는다."""
+    sys.path.insert(0, BASE)
+    import app
+    return app
+
+
+def step_gpu() -> bool:
+    title(6, 10, "그래픽카드")
+    try:
+        smi = load_app().nvidia_smi()
+    except Exception as e:
+        done("그래픽카드", SKIP, f"확인하지 못했다. {type(e).__name__}")
+        return False
+
+    if not smi["ok"]:
+        say("NVIDIA 그래픽카드를 찾지 못했다. CPU 로 동작한다.")
+        say("받아쓰기는 되지만 1시간 녹음에 30분쯤 걸린다.")
+        done("그래픽카드", SKIP, smi["why"])
+        return False
+
+    say(f"{smi['name']} · 드라이버 CUDA {smi['cuda'] or '?'}")
+    if smi["old"]:
+        print()
+        say(smi["why"])
+        say("드라이버를 갱신하고 이 파일을 다시 더블클릭하면 된다.")
+        done("그래픽카드", FAIL, f"드라이버 CUDA {smi['cuda']} — 12.0 이상이 필요하다")
+        return False
+
+    print()
+    say("관련 파일 약 700MB 를 받으면 20배쯤 빨라진다.")
+    say("1시간 녹음이 30분에서 3분으로 준다.")
+    print()
+    if not ask("받을까?", True):
+        done("그래픽카드", SKIP, "받지 않기로 했다. CPU 로 동작한다")
+        return False
+
+    req = os.path.join(BASE, "requirements-gpu.txt")
+    ok, why = (pip_install("-r", req) if os.path.isfile(req)
+               else pip_install("nvidia-cublas-cu12", "nvidia-cudnn-cu12>=9"))
+    if ok:
+        done("그래픽카드", OK, smi["name"])
+        return True
+    done("그래픽카드", FAIL, why or "pip 오류")
+    say("받아쓰기는 CPU 로 그대로 된다. 느릴 뿐이다.")
+    return False
+
+
+def step_gpu_check(want_gpu: bool) -> None:
+    """
+    **설치만으로는 부족하다.** DLL 이 디스크에 있어도 경로에 없으면 못 찾는다.
+    이번 사고가 그것이었다. 끊긴 고리를 짚는다.
+
+    진단 화면과 같은 함수를 쓴다. 두 벌로 두면 한쪽만 고치게 된다.
+    """
+    if not want_gpu:
+        return
+    print()
+    say("그래픽카드 점검")
+    try:
+        app = load_app()
+        rows = app.gpu_report(probe=os.path.isfile(app.PROBE_WAV))
+    except Exception as e:
+        say(f"  점검하지 못했다. {type(e).__name__}: {e}")
+        return
+    mark = {"ok": "통과", "fail": "못 함", "skip": "건너뜀"}
+    for name, state, detail in rows:
+        say(f"  {mark[state]}  {name:<22s} {detail[:70]}")
+    if any(s == "fail" for _, s, _ in rows):
+        print()
+        say("위에서 '못 함' 이 난 줄이 원인이다. 화면의 [진단] 에서 다시 볼 수 있다.")
 
 
 def fetch_whisper() -> bool:
@@ -293,7 +368,7 @@ def fetch_diarization(tok: str) -> bool:
 
 
 def step_model(want_dia: bool, tok: str) -> bool:
-    title(6, 9, "모델 미리 받기")
+    title(7, 10, "모델 미리 받기")
     say("받아쓰기 모델 약 1.6GB"
         + (" · 화자 분리 모델 약 31MB" if want_dia else "") + " 를 받는다.")
     say("지금 받아두면 첫 실행이 바로 시작된다.")
@@ -312,7 +387,7 @@ def step_model(want_dia: bool, tok: str) -> bool:
 
 
 def step_dirs() -> bool:
-    title(7, 9, "폴더 만들기")
+    title(8, 10, "폴더 만들기")
     made, bad = [], []
     for name in ("audio", "out_text", "data"):
         p = os.path.join(BASE, name)
@@ -330,7 +405,7 @@ def step_dirs() -> bool:
 
 
 def step_shortcut() -> bool:
-    title(8, 9, "바탕화면 바로가기")
+    title(9, 10, "바탕화면 바로가기")
     if os.name != "nt":
         done("바로가기", SKIP, "윈도우에서만 만든다")
         return False
@@ -351,7 +426,7 @@ def step_shortcut() -> bool:
 
 
 def step_summary() -> None:
-    title(9, 9, "설치 결과")
+    title(10, 10, "설치 결과")
     for name, status, note in steps:
         mark = {OK: "통과  ", SKIP: "건너뜀", FAIL: "못 했다"}[status]
         print(f"  {mark} {name}" + (f"   {note}" if note else ""))
@@ -386,9 +461,11 @@ def main() -> int:
     tok = step_token() if want_dia else ""
     if want_dia:
         step_env(tok)
+    want_gpu = step_gpu()
     step_model(want_dia, tok)
     step_dirs()
     step_shortcut()
+    step_gpu_check(want_gpu)
     step_summary()
     return 0
 

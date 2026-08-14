@@ -147,6 +147,23 @@ else:
         skipped.append(n)
         print(f"  건너뜀 {n}   음원이 없다")
 
+print("\n■ 4-2. 대기열 비우기\n")
+post("/queue/stopall", {"on": True})
+for _ in range(3):
+    post("/queue/add", {"paths": [target], "settings": opt,
+                        "outdir": os.environ["OUTDIR"]})
+n_before = len(get("/state")["queue"])
+check("담겼다", n_before >= 3, str(n_before))
+# 비우기 전에 만들어진 파일을 하나 놓아 두고, 그것이 살아남는지 본다.
+keep = os.path.join(os.environ["OUTDIR"], "지우면_안_된다.txt")
+with open(keep, "w", encoding="utf-8") as f:
+    f.write("산출물은 보존한다")
+r = post("/queue/clear", {})
+check("비운다", bool(r.get("ok")) and r.get("removed") == n_before, str(r))
+check("대기 항목이 사라진다", get("/state")["queue"] == [])
+check("만들어진 파일은 그대로 둔다", os.path.isfile(keep))
+post("/queue/stopall", {"on": False})
+
 print("\n■ 5-2. 끝난 알림 내리기\n")
 r = post("/job/dismiss", {})
 check("끝난 알림을 내린다", bool(r.get("ok")) or "아직" in str(r.get("error", "")),

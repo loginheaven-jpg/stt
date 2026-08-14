@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-14.6"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-14.7"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -496,6 +496,88 @@ def gpu_probe() -> dict:
         note_gpu(False, why)
         log(f"   GPU 탐침 실패 — {why[:200]}")
         return {"ok": False, "why": why[:400], "sec": round(time.time() - t0, 2)}
+
+
+def nvidia_smi() -> dict:
+    """
+    드라이버가 있는지 본다. **nvidia-smi 가 판정 기준이다.**
+    wmic 로 카드 이름만 보면 드라이버가 없어도 이름이 나와 헛짚는다.
+    """
+    import re
+    import subprocess
+    try:
+        r = subprocess.run(["nvidia-smi"], capture_output=True, timeout=20)
+    except FileNotFoundError:
+        return {"ok": False, "why": "nvidia-smi 가 없다. NVIDIA 드라이버가 깔려 있지 않다."}
+    except Exception as e:
+        return {"ok": False, "why": f"{type(e).__name__}: {e}"}
+    if r.returncode != 0:
+        return {"ok": False, "why": "nvidia-smi 가 오류를 냈다. 드라이버를 확인해달라."}
+    out = r.stdout.decode("utf-8", "replace")
+    cuda = re.search(r"CUDA Version:\s*([\d.]+)", out)
+    name = re.search(r"\|\s+\d+\s+(NVIDIA[^|]+?)\s{2,}", out)
+    ver = cuda.group(1) if cuda else ""
+    old = False
+    try:
+        old = bool(ver) and float(".".join(ver.split(".")[:2])) < 12.0
+    except ValueError:
+        pass
+    return {"ok": True, "cuda": ver, "name": (name.group(1).strip() if name else "NVIDIA GPU"),
+            "old": old,
+            "why": ("드라이버가 낡았다. CUDA 12.0 이상이 필요하다." if old else "")}
+
+
+def gpu_report(probe: bool = False) -> list:
+    """
+    설치기와 진단 화면이 함께 쓴다. 항목마다 (이름, 상태, 설명).
+    상태는 ok · fail · skip 셋이다.
+
+    **끊긴 고리를 짚는 것이 목적이다.** 패키지가 있는지만 보면 이번 사고를 놓친다 —
+    DLL 은 디스크에 있었고 경로에 없었다.
+    """
+    import importlib.metadata as md
+    rows = []
+
+    smi = nvidia_smi()
+    if not smi["ok"]:
+        rows.append(("드라이버", "fail", smi["why"]))
+    elif smi["old"]:
+        rows.append(("드라이버", "fail", f"{smi['name']} · CUDA {smi['cuda']} — {smi['why']}"))
+    else:
+        rows.append(("드라이버", "ok", f"{smi['name']} · CUDA {smi['cuda'] or '?'}"))
+
+    try:
+        import ctranslate2
+        v = ctranslate2.__version__
+        gen = "CUDA 12 · cuDNN 9" if v.split(".")[0] == "4" else "판정 못 함"
+        rows.append(("ctranslate2", "ok", f"{v} → {gen} 계열이 필요하다"))
+    except Exception:
+        rows.append(("ctranslate2", "fail", "없다. faster-whisper 가 설치되지 않았다"))
+
+    for pkg in ("nvidia-cublas-cu12", "nvidia-cudnn-cu12"):
+        try:
+            rows.append((pkg, "ok", md.version(pkg)))
+        except Exception:
+            rows.append((pkg, "skip", "휠이 없다. torch 가 들고 있으면 그것으로도 된다"))
+
+    dirs = register_cuda_dlls()
+    for dll in ("cublas64_12.dll", "cudnn64_9.dll"):
+        where = next((d for d in dirs if os.path.isfile(os.path.join(d, dll))), "")
+        rows.append((dll, "ok" if where else "fail",
+                     where or "등록된 폴더 어디에도 없다"))
+
+    rows.append(("DLL 경로 등록", "ok" if dirs else "fail",
+                 f"{len(dirs)}곳 — " + " · ".join(
+                     os.path.basename(os.path.dirname(d)) for d in dirs) if dirs
+                 else "찾은 폴더가 없다"))
+
+    if probe:
+        r = gpu_probe()
+        rows.append(("시험 전사", "ok" if r["ok"] else "fail",
+                     f"{r['sec']}초 · {r.get('device', '')}" if r["ok"] else r.get("why", "")))
+    else:
+        rows.append(("시험 전사", "skip", "탐침을 돌리지 않았다"))
+    return rows
 
 
 def get_whisper(model: str, device: str, compute: str):
@@ -1906,7 +1988,10 @@ ul.list li .bad{color:var(--warn);font-weight:600}
 </section>
 
 <section id="qsec" class="hide">
-  <div class="head"><p class="lab">대기열 (<span id="qn">0</span>)</p></div>
+  <div class="head">
+    <p class="lab">대기열 (<span id="qn">0</span>)</p>
+    <button class="mini" id="qclear" type="button">대기열 비우기</button>
+  </div>
   <ul class="list" id="qlist"></ul>
 </section>
 
@@ -2313,6 +2398,14 @@ $("#stopall").onclick = async () => {
   await post("/queue/stopall",{on:!s.stopall}); poll();
 };
 $("#dismiss").onclick = async () => { await post("/job/dismiss",{}); poll(); };
+$("#qclear").onclick = async () => {
+  const s = await (await fetch("/state")).json();
+  const n = s.queue.filter(x=>x.state!=="running").length;
+  if(!n){ alert("뺄 항목이 없다."); return; }
+  if(!confirm(`대기 중인 ${n}건을 대기열에서 뺀다. 돌고 있는 것은 그대로 둔다.\n\n`
+            + `이미 만들어진 파일은 지우지 않는다.`)) return;
+  await post("/queue/clear",{}); poll();
+};
 $("#retry").onclick = async () => {
   const j = window._job || {};
   if(!j.hid) return;
@@ -2793,6 +2886,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if u.path == "/queue/resume":
             b = self._body()
             return self._json(resume_item(b.get("id", ""), b.get("mode", "overwrite")))
+
+        if u.path == "/queue/clear":
+            # 대기 중인 것만 뺀다. 도는 것은 건드리지 않고 **산출물도 지우지 않는다.**
+            # 이 프로젝트의 안전장치 전부가 "중단해도 여기까지는 남는다" 를 향해 있다.
+            with STATE_LOCK:
+                keep = [x for x in QUEUE["items"] if x.get("state") == "running"]
+                n = len(QUEUE["items"]) - len(keep)
+                QUEUE["items"] = keep
+                save_queue()
+            if n:
+                log(f"   대기열을 비웠다 — {n}건. 만들어진 파일은 그대로 둔다.")
+            return self._json({"ok": True, "removed": n})
 
         if u.path == "/queue/stopall":
             on = bool(self._body().get("on", True))

@@ -1,0 +1,40 @@
+# 고지
+
+이 도구는 MIT 로 배포한다([LICENSE](LICENSE)). 아래는 함께 쓰는 것들의 조건이다.
+
+## 모델
+
+**`pyannote/speaker-diarization-community-1` 은 CC-BY-4.0 이다.**
+
+화자 분리 결과를 공개하거나 배포할 때는 출처를 밝힌다. 쓰려면 HuggingFace 에서
+약관에 동의해야 하고, 동의는 계정에 붙는다.
+
+받아쓰기 모델은 `mobiuslabsgmbh/faster-whisper-large-v3-turbo` 로 OpenAI Whisper
+(MIT) 를 ctranslate2 형식으로 옮긴 것이다.
+
+## 파이썬 패키지
+
+| 패키지 | 라이선스 | 쓰임 |
+|---|---|---|
+| faster-whisper | MIT | 받아쓰기 |
+| ctranslate2 | MIT | 위의 추론 엔진 |
+| av | BSD-3-Clause | 음원 읽기 |
+| onnxruntime | MIT | VAD |
+| tokenizers · huggingface-hub | Apache-2.0 | 토큰화 · 모델 내려받기 |
+| numpy | BSD-3-Clause | 파형 다루기 |
+| pyannote.audio | MIT | 화자 분리 (선택) |
+| torch · torchaudio | BSD-3-Clause | 위의 연산 (선택) |
+
+## NVIDIA 라이브러리
+
+`nvidia-cublas-cu12` 와 `nvidia-cudnn-cu12` 는 **NVIDIA 독점 라이선스**다.
+그래픽카드를 쓸 때만 설치되며 이 저장소에 포함되지 않는다. 재배포 조건은
+NVIDIA 의 조건을 따른다.
+
+## 음원과 전사문
+
+`tests/probe.wav` 는 그래픽카드 점검용 2.8 초 음원이다. 사람 이름이 나오지 않는
+구간을 골랐다.
+
+`baseline/` 의 전사문은 회귀 기준선이다. 저장소에는 회귀에 쓰는 것만 두고,
+그 밖의 녹음과 전사문은 올리지 않는다.

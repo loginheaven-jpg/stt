@@ -1,0 +1,24 @@
+# 회귀 재현용. 설치에는 쓰지 않는다 — setup.py 는 requirements.txt 를 본다.
+#
+# baseline/ 의 수치를 낸 환경을 그대로 적어 둔다. 기준선을 동결해 놓고
+# 환경을 동결하지 않으면 재현이 보장되지 않는다.
+#
+# 잰 곳 — Windows 10 · Python 3.13.7 · NVIDIA GeForce RTX 3060 · 드라이버 CUDA 12.6
+# 잰 때 — 2026-08-14
+
+faster-whisper==1.2.1
+ctranslate2==4.8.1
+av==18.1.0
+onnxruntime==1.28.0
+tokenizers==0.22.2
+huggingface-hub==0.36.2
+numpy==2.4.2
+
+# 화자 분리
+pyannote.audio==4.0.7
+torch==2.13.0+cu126
+torchaudio==2.11.0+cu126
+
+# 그래픽카드
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.24.0.43

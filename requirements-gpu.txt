@@ -1,0 +1,10 @@
+# 그래픽카드용. setup.py 가 NVIDIA GPU 를 찾으면 물어보고 깐다. 약 700MB.
+#
+# cuDNN 은 버전 하한이 중요하다. ctranslate2 4.x 는 cuDNN 9 를 요구하는데
+# >=9 를 빼면 8 이 깔려 "cublas64_12.dll is not found" 와 같은 증상이 난다.
+#
+# 설치만으로는 부족하다. pip 는 DLL 을 site-packages/nvidia/*/bin 에 넣고
+# PATH 에 올리지 않는다. app.py 의 register_cuda_dlls() 가 기동할 때 등록한다.
+
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9

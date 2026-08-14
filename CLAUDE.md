@@ -23,10 +23,10 @@ $env:PORT = "8766"; python app.py  # 포트를 바꿔 띄운다
 python app.py --selftest           # fix_terms 16개 사례. 교정 로직을 고쳤으면 먼저 돌린다
 python app.py --shortcut           # start.vbs 와 바탕화면 바로가기를 만든다
 python setup.py                    # 설치기. 더블클릭용이지만 명령창에서도 돈다
-python tests/state_test.py         # 종료 상태 정합 36건. 음원이 필요 없다
+python tests/state_test.py         # 종료 상태·기기 대체·GPU 탐침 76건
 python tests/queue_test.py         # 대기열·이력·설정·캐시 36건
-python tests/screen_test.py        # 화면과 백엔드의 접합면 34건
-python tests/setup_test.py         # 설치기 갈래 37건
+python tests/screen_test.py        # 화면과 백엔드의 접합면 40건
+python tests/setup_test.py         # 설치기 갈래 56건
 ```
 
 **`app.py`나 `setup.py`를 고쳤으면 다섯을 다 돌린다.** 음원이 없으면 그 절만 건너뛴다. 시험은 임시 폴더에서 돌고 `env.local`과 실제 `data/`를 건드리지 않는다.
@@ -60,7 +60,7 @@ python run_stt.py --check                                    # 인증 정보만 
 
 ## `app.py` 구조
 
-단일 파일 ~1300줄. 표준 라이브러리 `http.server`만 쓴다. **Flask·FastAPI 등 프레임워크를 도입하지 않는다** (설치 관문).
+단일 파일 ~3100줄. 표준 라이브러리 `http.server`만 쓴다. **Flask·FastAPI 등 프레임워크를 도입하지 않는다** (설치 관문).
 
 ### 전역 상태와 잠금
 
@@ -171,7 +171,7 @@ STATE_LOCK 위 셋을 감싼다
 
 `transcribe()`의 여는 `upd()`는 **`duration`과 `hid`도 되돌린다.** 앞 작업 값이 남으면 막대가 엉뚱한 길이로 그려지고 `다시 시도`가 앞 파일을 담는다.
 
-### 전사 3단계 — [app.py:627](app.py#L627) `transcribe()`
+### 전사 3단계 — [app.py:1311](app.py#L1311) `transcribe()`
 
 1. **전사** — `WhisperModel.transcribe()`. 구간마다 `f.write()` + `f.flush()`로 즉시 저장한다. 2시간 50분에 죽어도 거기까지 남는다.
 2. **화자 분리** — `run_diarization()`. 실패해도 빈 목록을 돌려주고 넘어간다. 텍스트는 이미 있다.
@@ -181,11 +181,11 @@ STATE_LOCK 위 셋을 감싼다
 
 ### 알고리즘 요점
 
-- **화자 배정** [app.py:385](app.py#L385) — pyannote 턴을 그대로 따른다. 어절을 턴에 넣을 뿐 턴을 합치거나 지우지 않는다. `SENSITIVITY` 표의 `high`(기본)는 짧은 조각 흡수 단계를 아예 건너뛴다. 코칭 대화에서 맞장구는 잡음이 아니다.
-- **파형 직접 전달** [app.py:232](app.py#L232) — pyannote 4.x에 파일 경로를 주면 `torchcodec is not available`로 막힌다. `load_waveform()`이 16kHz 모노 텐서를 만들어 넘긴다.
-- **고유명사 교정** [app.py:511](app.py#L511) — 자모 편집거리. 첫 글자 일치 + 길이별 거리 상한 + 어절 안 조각 탐색(조사·어미 대응). **사용자가 이름·용어 칸에 적은 것만 고친다.** 그 밖의 교정은 창작이다. 바꾼 건 전부 `_corrections.md` 대장에 남긴다.
+- **화자 배정** [app.py:1033](app.py#L1033) — pyannote 턴을 그대로 따른다. 어절을 턴에 넣을 뿐 턴을 합치거나 지우지 않는다. `SENSITIVITY` 표의 `high`(기본)는 짧은 조각 흡수 단계를 아예 건너뛴다. 코칭 대화에서 맞장구는 잡음이 아니다.
+- **파형 직접 전달** [app.py:890](app.py#L890) — pyannote 4.x에 파일 경로를 주면 `torchcodec is not available`로 막힌다. `load_waveform()`이 16kHz 모노 텐서를 만들어 넘긴다.
+- **고유명사 교정** [app.py:1176](app.py#L1176) — 자모 편집거리. 첫 글자 일치 + 길이별 거리 상한 + 어절 안 조각 탐색(조사·어미 대응). **사용자가 이름·용어 칸에 적은 것만 고친다.** 그 밖의 교정은 창작이다. 바꾼 건 전부 `_corrections.md` 대장에 남긴다.
 - **`condition_on_previous_text=False` 고정** — `True`면 침묵 구간에서 앞 문장을 무한 반복한다.
-- **`env.local` 파싱** [app.py:86](app.py#L86) — BOM·CRLF·따옴표·`export `/`$env:` 접두·한 줄 다중 항목을 모두 받는다. 관대함이 의도다. 약화하지 않는다.
+- **`env.local` 파싱** [app.py:742](app.py#L742) — BOM·CRLF·따옴표·`export `/`$env:` 접두·한 줄 다중 항목을 모두 받는다. 관대함이 의도다. 약화하지 않는다.
 
 ### 화면
 
@@ -204,7 +204,7 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 | | 경로 |
 |---|---|
 | GET | `/` `/files` `/diacheck` `/diag` `/version` `/status` `/log?n=` `/open?p=` `/queue` `/history?n=` `/settings` `/state` |
-| POST | `/start` `/cancel` `/queue/add` `/queue/move` `/queue/remove` `/queue/resume` `/queue/stopall` `/history/remove` `/history/again` `/settings` `/outdir/check` `/job/dismiss` `/shortcut` `/quit` |
+| POST | `/start` `/cancel` `/queue/add` `/queue/move` `/queue/remove` `/queue/resume` `/queue/stopall` `/queue/clear` `/history/remove` `/history/again` `/settings` `/outdir/check` `/job/dismiss` `/gpu/probe` `/shortcut` `/quit` |
 
 **`self._body()`는 한 번만 부른다.** 두 번 부르면 `rfile`이 비어 있어 요청이 영원히 멈춘다. `/history/again`에서 실제로 겪었다.
 
@@ -277,9 +277,11 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 | 1 | §2 실패 상태 정합 · 진행 막대 100% · 종료 후 표시 | **끝났다** |
 | 2 | §3 대체 경로(전사 루프 감싸기) · DLL 등록 범위 확대 | **끝났다** |
 | 3 | §4 인디케이터 · 즉답 판정 · 탐침 | **끝났다** |
-| 4 | §5 설치기 · 의존성 분리 | 다음 |
-| 5 | §2-8 대기열 비우기 버튼 | — |
-| 6 | 문서 갱신 · 회귀 | — |
+| 4 | §5 설치기 · 의존성 분리 | **끝났다** |
+| 5 | §2-8 대기열 비우기 버튼 | **끝났다** |
+| 6 | 문서 갱신 · 회귀 | **끝났다** |
+
+**대기열 비우기는 산출물을 지우지 않는다.** 대기 중인 항목만 큐에서 뺀다. 도는 것은 건드리지 않는다.
 
 **전체 중지의 뜻을 바꾸지 않는다.** "현재 항목을 끝내고 멈춘다"이고 대기열은 유지된다. 부분 산출물을 지우자는 안은 반려됐다 — 이 프로젝트의 안전장치 전부가 "중단해도 여기까지는 남는다"를 향해 있다. 대기열을 비우는 동작이 필요하면 **대기열 구역에 별도 버튼**으로 만들고, 그것도 산출물은 지우지 않는다.
 
@@ -296,6 +298,24 @@ CSS 변수 팔레트는 그대로 쓴다. 새 색을 도입하지 않는다. 시
 `step_pyannote()`가 돌려주는 값은 **"쓰겠다고 했는가"이지 설치 성패가 아니다.** 설치가 실패해도 토큰은 받아둔다. 나중에 pip만 다시 돌리면 되도록.
 
 **모델 둘을 설치할 때 함께 받는다.** 받아쓰기 1.6GB와 화자 분리 31MB다. 화자 분리 모델을 첫 작업까지 미루면 사용자는 앱이 멈춘 줄 안다. `fetch_diarization()`은 토큰을 인자로 못 받으면 `env.local`에서 읽고, 실패가 gated·401·403이면 **약관 미동의**를 짚어 동의 주소를 알려준다 — 가장 흔한 실패다.
+
+열 단계다. 6번이 GPU다.
+
+**GPU 단계는 카드가 있을 때만 묻는다.** `nvidia_smi()`가 아무것도 못 찾으면 `SKIP`이다 — 없는 사람에게 700MB를 권하지 않는다.
+
+설치 끝에 `step_gpu_check()`가 여덟 줄짜리 표를 낸다. **마지막 줄이 실제 전사다.** `tests/probe.wav`를 진짜로 돌려 본다. 앞의 일곱 줄이 다 통과해도 이것이 실패하면 GPU로 돌지 않는다 — 새 PC에서 실제로 그랬다.
+
+**`load_app()`이 `app.py`에서 `nvidia_smi`·`gpu_report`를 빌려 온다.** 판정 논리를 두 벌 두면 설치기와 진단 화면이 다른 말을 한다. 실제로 그것 때문에 한 번 헤맸다.
+
+### 의존성 파일 셋
+
+| 파일 | 무엇을 |
+|---|---|
+| `requirements.txt` | 설치용. **하한만 적는다**(`>=`). 새 PC가 최신을 받아야 한다 |
+| `requirements-gpu.txt` | CUDA 휠. 카드가 있을 때만 |
+| `requirements.lock` | **회귀 재현용. 정확히 고정한다**(`==`) |
+
+**둘을 합치지 않는다.** 기준선을 재현하려면 정확한 판올림이 필요하고, 새 PC 설치는 그러면 안 된다. 목적이 반대다.
 
 ### `fix_terms()` — 꼬리 우선 분할
 
@@ -324,7 +344,7 @@ JSON 쓰기는 원자적으로 한다. 임시 파일에 쓴 뒤 `os.replace`. �
 
 ## 그 밖
 
-- **git 저장소가 아니다.** 되돌릴 수 없으니 큰 수정 전에는 사본을 둔다.
+- **git 저장소다.** 원격은 `https://github.com/loginheaven-jpg/stt` 다. 단계마다 커밋한다.
 - `env.local`에 RTZR·CLOVA·OpenAI·HuggingFace 실키가 평문으로 들어 있다. 출력·로그·커밋에 값이 새지 않게 한다 (진단 화면도 길이만 표시한다).
 - 입출력은 전부 UTF-8. 한글 파일명이 깨지지 않아야 한다.
 - `audio/sample3.wav`(26.7초)는 **R1 회귀 기준선 음원이다. 지우지 않는다.** 뿌리의 `sample3.wav`는 같은 파일의 사본이다. `sample_.wav`·`sample2.wav`·`sample2.txt`는 2026-08-14에 지웠다 — 회귀에 쓰지 않고 실존 인물의 녹음이었다.
