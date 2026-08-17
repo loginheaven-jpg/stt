@@ -268,6 +268,44 @@ saved = json.load(open(os.path.join(TESTDATA, "settings.json"), encoding="utf-8"
 check("settings.json 에 남는다", len(saved["presets"]) == 3)
 check("마지막 설정이 남는다", saved["last"]["hotwords"] == "이승은")
 
+print("\n■ 9-2. 기본값 — 코칭 대화를 향한다\n")
+d = app.DEFAULT_OPT
+check("화자 분리를 켜고 시작한다", d["diarize"] is True)
+check("화자 수는 자동 추정", d["nspk"] == 0)
+check("전환 민감도는 민감", d["sens"] == "high")
+check("저장 형식 — 시각 포함", d["formats"]["timed"] is True)
+check("저장 형식 — 정본화 초안", d["formats"]["canon"] is True)
+check("저장 형식 — 평문 txt 는 끈다", d["formats"]["plain"] is False)
+check("연산 정밀도는 int8", d["compute"] == "int8")
+# 프리셋은 지시서 §3-4 의 값이다. 기본값을 바꿔도 따라 움직이면 안 된다.
+pre = {p["name"]: p["settings"] for p in app.DEFAULT_PRESETS}
+check("프리셋 '코칭 시연' 은 2명 그대로", pre["코칭 시연"]["nspk"] == 2)
+check("프리셋 '강의 받아쓰기' 는 화자 분리 끔", pre["강의 받아쓰기"]["diarize"] is False)
+
+print("\n■ 9-3. 없앤 정밀도가 남아 있어도 죽지 않는다\n")
+# int8_float16 · float16 은 CPU 에서 ValueError 를 낸다. 읽을 때 되돌린다.
+for old in ("int8_float16", "float16"):
+    got = app.norm_opt({"compute": old, "device": "cuda", "nspk": 4})
+    check(f"{old} → int8", got["compute"] == "int8", got["compute"])
+keep = app.norm_opt({"compute": "float16", "device": "cpu", "nspk": 6,
+                     "formats": {"plain": True, "timed": False}})
+check("사람이 고른 기기는 그대로 둔다", keep["device"] == "cpu")
+check("사람이 고른 화자 수는 그대로 둔다", keep["nspk"] == 6)
+check("사람이 끈 형식을 되살리지 않는다", keep["formats"]["timed"] is False)
+check("빠진 형식만 기본값으로 채운다", keep["formats"]["canon"] is True)
+# 큐에 담긴 옛 항목도 담기는 순간 맞춰져야 한다.
+post("/queue/stopall", {"on": True})
+r = post("/queue/add", {"paths": [BAD1], "settings": dict(FAST, compute="float16"),
+                        "outdir": TESTOUT})
+if r.get("ok"):
+    it = next(x for x in get("/queue")["items"] if x["id"] == r["ids"][0])
+    check("담을 때도 되돌린다", it["settings"]["compute"] == "int8",
+          it["settings"]["compute"])
+    post("/queue/remove", {"id": it["id"]})
+else:
+    check("담을 때도 되돌린다", False, str(r))
+post("/queue/stopall", {"on": False})
+
 print(f"\n{'=' * 60}")
 if CACHE_NUM:
     e1, c1, t1, e2, c2, t2 = CACHE_NUM

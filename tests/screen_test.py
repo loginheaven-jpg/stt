@@ -75,6 +75,39 @@ check("종료 버튼이 있다", 'id="quit"' in page)
 for lab in ("지금 하는 일", "대기열", "담기", "최근 기록"):
     check(f"구역 — {lab}", lab in page)
 
+print("\n■ 1-2. 고를 수 있는 것과 없는 것\n")
+# 연산 정밀도는 없앴다. 이득이 없고 CPU 에서는 ValueError 를 낸다.
+check("연산 정밀도 칸이 없다", 'id="compute"' not in page and "연산 정밀도" not in page)
+check("정밀도 목록을 내려보내지 않는다", "COMPUTES" not in page)
+check("정밀도는 int8 하나로 굳었다", '"int8"' in page and "int8_float16" not in page)
+
+# 기기는 값이 auto 그대로여야 한다. cuda 로 못 박으면 대체 경로가 꺼진다.
+m = re.search(r"const .*DEVICES = (\[\[.*?\]\])", page)
+devs = json.loads(m.group(1)) if m else []
+check("기기 목록이 값과 라벨을 함께 준다", [d[0] for d in devs] == ["auto", "cpu", "cuda"],
+      str(devs))
+check("auto 옆에 판정을 적는다",
+      devs and devs[0][1] in ("auto · GPU 사용", "auto · CPU만"), str(devs[:1]))
+check("기기 값은 auto 그대로다 — cuda 로 못 박으면 대체 경로가 꺼진다",
+      devs and devs[0][0] == "auto")
+
+# 화자 수 — 1~10 이 빠짐없이 있어야 한다. 7·9 가 없던 시절이 있었다.
+have = {int(v) for v in re.findall(r'<option value="(\d+)"[^>]*>\d+명', page)}
+check("화자 수 1~10 이 다 있다", have >= set(range(1, 11)),
+      f"빠진 것 {sorted(set(range(1, 11)) - have)}")
+
+print("\n■ 1-3. 기본 체크 상태\n")
+def checked(el_id):
+    m = re.search(r'<input type="checkbox" id="' + el_id + r'"([^>]*)>', page)
+    return m is not None and "checked" in m.group(1)
+check("화자 분리 — 켬", checked("diarize"))
+check("시각 포함 txt — 켬", checked("f_timed"))
+check("정본화 초안 md — 켬", checked("f_canon"))
+check("평문 txt — 끔", not checked("f_plain"))
+check("자막 srt — 끔", not checked("f_srt"))
+check("화자 수 — 자동 추정", '<option value="0" selected>자동 추정' in page)
+check("전환 민감도 — 민감", '<option value="high" selected>민감' in page)
+
 print("\n■ 2. /state 가 화면이 읽는 것을 다 내려주는가\n")
 s = get("/state")
 check("최상위 키", set(s) >= {"job", "queue", "stopall", "history", "settings", "version"},

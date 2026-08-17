@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-14.7"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-15.1"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -39,7 +39,29 @@ AUDIO_EXT = (".wav", ".mp3", ".m4a", ".mp4", ".flac", ".ogg", ".aac",
 
 MODELS = ["large-v3-turbo", "large-v3", "medium", "small"]
 DEVICES = ["auto", "cpu", "cuda"]
-COMPUTES = ["int8", "int8_float16", "float16"]
+
+# 연산 정밀도는 int8 하나로 고정한다. 화면에서 고르지 않는다.
+#
+# 한때 int8 · int8_float16 · float16 셋을 열어 뒀다. 실측해 보니 이득이 없었다.
+# (2026-08-15 · RTX 3060 · audio/이승은코치.m4a 18:14 · 다른 인자는 동일)
+#
+#   int8          31.53x   구간 184 · 5490자
+#   int8_float16  31.71x   구간 184 · 5490자    산출물이 같다. 0.6% 는 잡음이다
+#   float16       30.99x   구간 187 · 5570자    느린 데다 산출물이 달라진다
+#
+# float16 은 R1 을 통과하지 못한다. 화자 오귀속률이 0.00% → 7.14% 로 올랐다
+# (허용 +2%p). 낮은 정밀도 누적이 시각을 1초 밀어 어절 하나가 화자 경계를
+# 넘어갔다. 이 프로젝트가 CER 보다 중요하게 치는 지표다.
+#
+# 그리고 CPU 는 int8_float16 · float16 을 지원하지 않는다. 조용히 내려가지
+# 않고 ValueError 를 던진다. 화면이 기기=cpu 와 함께 고르게 놔뒀으므로
+# 이득 없는 선택지가 고장 경로를 하나 만들어 두고 있었다.
+#
+#   cpu  지원 = {int8, int16, float32, int8_float32}
+#   cuda 지원 = {int8, int8_float32, float16, bfloat16, int8_float16, ...}
+#
+# int8 은 두 기기 모두에서 도는 유일한 값이기도 하다. 되살리지 않는다.
+COMPUTE = "int8"
 
 # 모델·기기별 대략의 실시간 배속. 시작 전 예상치에만 쓰고, 시작 후에는 실측으로 바꾼다.
 ROUGH_SPEED = {
@@ -184,14 +206,34 @@ HISTORY_PATH = os.path.join(DATA, "history.json")
 STATE_LOCK = threading.RLock()             # 잠금 순서 — STATE_LOCK → LOCK → _LOG_LOCK
 HISTORY_MAX = 200
 
+# 기본값은 "코칭 대화를 받아쓴다" 를 향한다. 이 도구의 주 용도다.
+#   화자 분리 켬    둘 이상이 말하는 녹음이 대부분이다
+#   자동 추정       인원을 모르고 담는 일이 잦다. 틀린 수를 못 박으면
+#                  자동 추정보다 나쁘다 — pyannote 가 찾을 여지까지 없앤다
+#   민감            코칭 대화에서 맞장구는 잡음이 아니다
+#   시각 포함 · 정본화 초안   본문을 온전히 담는 둘. 평문 txt 는 그 부분집합이라 껐다
 DEFAULT_OPT = {
-    "model": "large-v3-turbo", "device": "auto", "compute": "int8",
+    "model": "large-v3-turbo", "device": "auto", "compute": COMPUTE,
     "lang": "ko", "beam": 5, "silence": 500,
     "vad": True, "fallback": True, "prompt": False, "fixterms": True,
     "hotwords": "",
-    "diarize": False, "nspk": 2, "sens": "high",
-    "formats": {"plain": True, "timed": True, "srt": False, "canon": False},
+    "diarize": True, "nspk": 0, "sens": "high",
+    "formats": {"plain": False, "timed": True, "srt": False, "canon": True},
 }
+
+
+def norm_opt(o) -> dict:
+    """저장된 설정을 지금 코드가 아는 모양으로 맞춘다.
+
+    없는 키만 기본값으로 채운다. **사람이 고른 값은 건드리지 않는다** —
+    판올림이 남의 선택을 되돌리면 안 된다. 예외는 `compute` 하나다.
+    없앤 GPU 전용 정밀도가 남아 있으면 CPU 에서 ValueError 로 죽으므로
+    그것만 되돌린다. 죽이지 않고 고쳐서 쓴다.
+    """
+    o = dict(DEFAULT_OPT, **(o or {}))
+    o["compute"] = COMPUTE
+    o["formats"] = dict(DEFAULT_OPT["formats"], **(o.get("formats") or {}))
+    return o
 
 # 지시서 §3-4 의 기본 제공 두 개. 값을 바꾸지 않는다.
 DEFAULT_PRESETS = [
@@ -282,6 +324,16 @@ def load_state() -> None:
         SETTINGS.setdefault("presets", DEFAULT_PRESETS)
         QUEUE.setdefault("items", [])
         HISTORY.setdefault("items", [])
+
+        # 없앤 정밀도가 옛 파일에 남아 있을 수 있다. 읽을 때 되돌린다.
+        # 큐에 담긴 항목까지 훑는다 — 담아 두고 판올림한 경우가 있다.
+        SETTINGS["last"] = norm_opt(SETTINGS["last"])
+        for p in SETTINGS["presets"]:
+            if isinstance(p, dict) and isinstance(p.get("settings"), dict):
+                p["settings"] = norm_opt(p["settings"])
+        for it in QUEUE["items"]:
+            if isinstance(it.get("settings"), dict):
+                it["settings"] = norm_opt(it["settings"])
 
         # 앱이 죽어 running 으로 남은 항목. 자동으로 다시 돌리지 않는다.
         # 부분 산출 파일이 이미 있는데 처음부터 다시 돌면 덮어쓴다. 사람이 고른다.
@@ -436,6 +488,18 @@ GPU = {"count": None, "usable": None, "why": "", "name": ""}
 PROBE_WAV = os.path.join(BASE, "tests", "probe.wav")
 
 
+def device_options() -> list:
+    """기기 목록. `auto` 옆에 기동 시 판정을 적어 준다.
+
+    값은 `auto` 그대로 둔다. 기본값을 `cuda` 로 못 박으면 대체 경로가 꺼진다
+    (`transcribe()` 의 `auto만` 규칙). GPU 가 말썽인 PC 에서 그대로 오류로
+    끝난다는 뜻이다. 부족했던 것은 동작이 아니라 표시였다 — `auto` 라고만
+    적혀 있으니 그것이 GPU 를 쓴다는 뜻인지 알 수가 없었다.
+    """
+    auto = "auto · GPU 사용" if gpu_count() > 0 else "auto · CPU만"
+    return [["auto", auto], ["cpu", "cpu"], ["cuda", "cuda"]]
+
+
 def gpu_count() -> int:
     """물리 GPU 개수. 즉답이다 — 모델을 만들지 않으므로 내려받기가 없다."""
     if GPU["count"] is None:
@@ -484,7 +548,7 @@ def gpu_probe() -> dict:
     try:
         with STATE_LOCK:
             name = (SETTINGS.get("last") or {}).get("model") or DEFAULT_OPT["model"]
-        m, cached, dev, comp = get_whisper(name, "cuda", "int8")
+        m, cached, dev, comp = get_whisper(name, "cuda", COMPUTE)
         segs, _ = m.transcribe(PROBE_WAV, language="ko", vad_filter=False)
         n = sum(1 for _ in segs)          # 다 소진해야 인코더가 실제로 돈다
         note_gpu(True)
@@ -597,7 +661,7 @@ def get_whisper(model: str, device: str, compute: str):
     # 한 번 내려갔으면 다음 항목부터는 CUDA 를 다시 시도하지 않는다.
     # 이것이 없으면 항목마다 실패를 되풀이하며 몇 초씩 버린다.
     if device == "auto" and _AUTO_DEV[0] == "cpu":
-        want, compute = "cpu", "int8"
+        want, compute = "cpu", COMPUTE
     if want == "cuda":
         register_cuda_dlls()
 
@@ -612,7 +676,7 @@ def get_whisper(model: str, device: str, compute: str):
         if device != "auto" or not is_cuda_error(e):
             raise
         log(f"   CUDA 로 모델을 못 올렸다. CPU 로 내려간다. {str(e)[:120]}")
-        want, compute = "cpu", "int8"      # CPU 에서 float16 은 더 느리거나 실패한다
+        want, compute = "cpu", COMPUTE
         _AUTO_DEV[0] = "cpu"
         key = (model, want, compute)
         if _WHISPER["key"] == key and _WHISPER["obj"] is not None:
@@ -1462,7 +1526,7 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
     #   부분폐기  다시 시작하기 전에 임시 파일을 비운다. 이것은 "중단" 이 아니라
     #            "다시 하는 것" 이므로 _부분 파일을 만들지 않는다 (§6-3 과 구분)
     want = (opt.get("device") or "auto").strip()
-    dev, comp = want, opt["compute"]
+    dev, comp = want, COMPUTE          # 화면에서 고르지 않는다. 옛 값은 무시한다
     rows, dur, stopped = [], 0.0, False
     for attempt in (1, 2):
         try:
@@ -1485,7 +1549,7 @@ def transcribe(path: str, opt: dict, outdir: str = None) -> None:
                 upd(processed=0.0, segments=0, chars=0, tail=[], duration=0.0,
                     speed=0.0, eta=0.0, elapsed=0.0, started=time.time(),
                     device_note=note, phase="CPU로 다시 시작한다")
-                dev, comp = "cpu", "int8"       # CPU 에서 float16 은 더 느리거나 실패한다
+                dev, comp = "cpu", COMPUTE
                 continue
             if cuda:
                 note_gpu(False, str(pe.err))
@@ -1650,6 +1714,7 @@ def queue_loop() -> None:
 
 def enqueue(paths: list, settings: dict, outdir: str) -> dict:
     """여러 건을 한 번에 담는다. 담기는 순간 실행기가 집어간다."""
+    settings = norm_opt(settings)      # 옛 화면·옛 이력에서 온 값을 여기서 맞춘다
     chk = check_outdir(outdir)
     if not chk["ok"]:
         return {"error": chk["why"]}
@@ -2016,7 +2081,6 @@ ul.list li .bad{color:var(--warn);font-weight:600}
     <div class="grid" style="margin-top:14px">
       <label class="fld"><span>모델</span><select id="model"></select></label>
       <label class="fld"><span>기기</span><select id="device"></select></label>
-      <label class="fld"><span>연산 정밀도</span><select id="compute"></select></label>
       <label class="fld"><span>언어</span>
         <select id="lang"><option value="ko">한국어</option><option value="auto">자동 감지</option></select>
       </label>
@@ -2036,7 +2100,7 @@ ul.list li .bad{color:var(--warn);font-weight:600}
       <label><input type="checkbox" id="fixterms" checked> 이름·용어 교정</label>
     </div>
     <div class="dia">
-      <label class="sw"><input type="checkbox" id="diarize"> <b>화자 분리</b></label>
+      <label class="sw"><input type="checkbox" id="diarize" checked> <b>화자 분리</b></label>
       <label class="fld inline" id="sens_wrap" hidden><span>전환 민감도</span>
         <select id="sens">
           <option value="high" selected>민감 · 맞장구 보존</option>
@@ -2045,19 +2109,21 @@ ul.list li .bad{color:var(--warn);font-weight:600}
         </select></label>
       <label class="fld inline" id="nspk_wrap" hidden><span>화자 수</span>
         <select id="nspk">
-          <option value="0">자동 추정</option><option value="2" selected>2명 · 코칭·인터뷰</option>
+          <option value="0" selected>자동 추정</option><option value="2">2명 · 코칭·인터뷰</option>
           <option value="1">1명</option><option value="3">3명</option>
           <option value="4">4명</option><option value="5">5명</option>
-          <option value="6">6명</option><option value="8">8명</option><option value="10">10명</option>
+          <option value="6">6명</option><option value="7">7명</option>
+          <option value="8">8명</option><option value="9">9명</option>
+          <option value="10">10명</option>
         </select></label>
       <p class="hint" id="dia_note" hidden>받아쓰기가 끝난 뒤 한 번 더 돌린다.
         음원 길이의 10~30%가 더 걸린다. 아는 인원을 지정하면 정확도가 오른다.</p>
     </div>
     <div class="checks">
-      <label><input type="checkbox" id="f_plain" checked> 평문 txt</label>
+      <label><input type="checkbox" id="f_plain"> 평문 txt</label>
       <label><input type="checkbox" id="f_timed" checked> 시각 포함 txt</label>
       <label><input type="checkbox" id="f_srt"> 자막 srt</label>
-      <label><input type="checkbox" id="f_canon"> 정본화 초안 md</label>
+      <label><input type="checkbox" id="f_canon" checked> 정본화 초안 md</label>
     </div>
   </details>
 
@@ -2083,12 +2149,9 @@ ul.list li .bad{color:var(--warn);font-weight:600}
 
 <script>
 const $ = s => document.querySelector(s);
-const MODELS = __MODELS__, DEVICES = __DEVICES__, COMPUTES = __COMPUTES__;
+const MODELS = __MODELS__, DEVICES = __DEVICES__, COMPUTE = __COMPUTE__;
 const SPEED = __SPEED__;
 let files = [], picked = new Set(), lastSeg = 0, settings = null, drewFor = 0;
-
-for (const [id, arr] of [["#model",MODELS],["#device",DEVICES],["#compute",COMPUTES]])
-  $(id).innerHTML = arr.map(v => `<option>${v}</option>`).join("");
 
 const hms = s => { s=Math.max(0,Math.round(s)); const h=(s/3600)|0,m=((s%3600)/60)|0,x=s%60;
   return h ? `${h}:${String(m).padStart(2,"0")}:${String(x).padStart(2,"0")}`
@@ -2097,10 +2160,15 @@ const esc = t => String(t).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&am
 const base = p => String(p).split(/[\\/]/).pop();
 const stamp = s => (s||"").replace("T"," ").slice(5,16);
 
+$("#model").innerHTML = MODELS.map(v => `<option>${esc(v)}</option>`).join("");
+/* 기기만 값과 보이는 글이 다르다 — auto 가 무엇을 고르는지 옆에 적어 준다 */
+$("#device").innerHTML = DEVICES.map(([v,t]) =>
+  `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+
 /* ── 설정 폼 ── */
 function readOpt(){
   return {
-    model:$("#model").value, device:$("#device").value, compute:$("#compute").value,
+    model:$("#model").value, device:$("#device").value, compute:COMPUTE,
     lang:$("#lang").value, beam:+$("#beam").value, silence:+$("#silence").value,
     vad:$("#vad").checked, fallback:$("#fallback").checked, prompt:$("#prompt").checked,
     fixterms:$("#fixterms").checked, hotwords:$("#hotwords").value,
@@ -2113,7 +2181,7 @@ function writeOpt(o){
   if(!o) return;
   const set=(id,v)=>{ const e=$(id); if(e!=null&&v!=null) e.value=v; };
   const chk=(id,v)=>{ const e=$(id); if(e!=null&&v!=null) e.checked=!!v; };
-  set("#model",o.model); set("#device",o.device); set("#compute",o.compute);
+  set("#model",o.model); set("#device",o.device);
   set("#lang",o.lang); set("#beam",o.beam); set("#silence",o.silence);
   chk("#vad",o.vad); chk("#fallback",o.fallback); chk("#prompt",o.prompt);
   chk("#fixterms",o.fixterms); set("#hotwords",o.hotwords);
@@ -2781,8 +2849,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             page = (PAGE
                     .replace("__VER__", APP_VERSION)
                     .replace("__MODELS__", json.dumps(MODELS))
-                    .replace("__DEVICES__", json.dumps(DEVICES))
-                    .replace("__COMPUTES__", json.dumps(COMPUTES))
+                    # 라벨에 한글이 있다. 페이지가 UTF-8 이므로 그대로 싣는다
+                    .replace("__DEVICES__", json.dumps(device_options(),
+                                                       ensure_ascii=False))
+                    .replace("__COMPUTE__", json.dumps(COMPUTE))
                     .replace("__SPEED__", json.dumps(
                         {f"{m}|{d}": v for (m, d), v in ROUGH_SPEED.items()})))
             return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
@@ -2929,7 +2999,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             b = self._body()
             with STATE_LOCK:
                 if "last" in b:
-                    SETTINGS["last"] = dict(DEFAULT_OPT, **b["last"])
+                    SETTINGS["last"] = norm_opt(b["last"])
                 if "presets" in b:
                     SETTINGS["presets"] = b["presets"]
                 save_settings()
