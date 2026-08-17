@@ -134,6 +134,32 @@ if AUDIO:
     check("2·3번째가 1번째보다 빠르다", el[1] < el[0] and el[2] < el[0],
           f"{el[0]:.1f} → {el[1]:.1f} / {el[2]:.1f}초")
 
+    print("\n■ 2-2. 화자 분리가 GPU 메모리를 물고 있지 않은가\n")
+    # 화자 분리가 torch 할당기 풀을 부풀린 채 두면 다음 항목의 전사가 굶는다.
+    # whisper 는 ctranslate2 의 별도 할당기를 써서 그 풀을 못 쓰기 때문이다.
+    # 2026-08-15 에 실측으로 잡았다 — 2번째 항목부터 전사가 36x → 12x 로 떨어졌다.
+    # 한 건만 돌려서는 절대 드러나지 않는다. 이 절을 지운다면 회귀를 여는 것이다.
+    try:
+        import torch
+        gpu = torch.cuda.is_available()
+    except Exception:
+        gpu = False
+    if not gpu:
+        skip("화자 분리 뒤 GPU 반환", "GPU 가 없다")
+    else:
+        dia = dict(FAST, diarize=True, nspk=2)
+        post("/queue/add", {"paths": [AUDIO], "settings": dia, "outdir": TESTOUT})
+        wait_idle()
+        held = torch.cuda.memory_reserved() / 2 ** 20
+        # 파이프라인 자체는 캐시에 남는다. 돌려주는 것은 이번 판의 활성 메모리다.
+        # 넉넉히 잡아 2GB 를 넘게 쥐고 있으면 반환이 안 된 것으로 본다.
+        check("화자 분리 뒤 활성 메모리를 돌려준다", held < 2048, f"{held:.0f}MB 쥐고 있다")
+        before = torch.cuda.memory_reserved() / 2 ** 20
+        app.free_gpu_cache()
+        check("free_gpu_cache() 가 더 게워낼 것을 남기지 않았다",
+              before - torch.cuda.memory_reserved() / 2 ** 20 < 512,
+              f"{before:.0f}MB → 추가 반환")
+
     print("\n■ 3. 캐시 없는 경우 대비 — 항목마다 캐시를 비우고 같은 일을 시킨다\n")
     # 설정은 위와 똑같이 두고 캐시만 없앤다. 그래야 캐시 효과만 남는다.
     t0 = time.time()

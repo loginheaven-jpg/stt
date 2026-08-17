@@ -27,7 +27,7 @@ import time
 import urllib.parse
 import webbrowser
 
-APP_VERSION = "2026-08-15.1"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
+APP_VERSION = "2026-08-15.2"     # 화면 우상단과 콘솔에 찍힌다. 갱신 확인용이다.
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8765"))
@@ -718,6 +718,35 @@ def get_dia_pipeline(tok: str):
     return pipe, False
 
 
+def free_gpu_cache() -> float:
+    """torch 가 쥔 GPU 블록을 드라이버에 돌려준다. 돌려준 MB 를 준다.
+
+    참조를 놓는 것만으로는 돌아가지 않는다. torch 의 할당기가 해제한 블록을
+    자기 풀에 담아 두기 때문이다. 그런데 **whisper 는 ctranslate2 의 별도
+    할당기를 쓴다.** 그래서 pyannote 가 한 번 돌아 풀이 부풀면 다음 항목의
+    전사가 쓸 GPU 메모리가 남지 않는다.
+
+    실측 (RTX 3060 12GB · 2026-08-15) — 이 호출이 없을 때
+
+        시작 전                      593 MiB
+        1번 sample3.wav (26초)     11938 MiB   ← 화자 분리가 여기서 부풀린다
+        2번 이승은코치 (18분)   전사 12.32x
+        3번 이승은코치 (18분)   전사 14.98x
+
+    같은 음원을 혼자 돌리면 전사가 35.9x 다. 항목 안 순서가 전사 → 화자
+    분리라 첫 항목만 메모리가 넉넉하고, 둘째부터 셋 중 하나로 느려진다.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return 0.0
+        before = torch.cuda.memory_reserved()
+        torch.cuda.empty_cache()
+        return max(0.0, (before - torch.cuda.memory_reserved()) / 2 ** 20)
+    except Exception:
+        return 0.0
+
+
 def release_cache(why: str = "") -> None:
     if _WHISPER["obj"] is None and _DIA["obj"] is None:
         return
@@ -728,7 +757,11 @@ def release_cache(why: str = "") -> None:
         gc.collect()
     except Exception:
         pass
-    log(f"   모델을 메모리에서 놓았다.{(' ' + why) if why else ''}")
+    # 참조를 놓는 것만으로는 GPU 메모리가 드라이버로 돌아가지 않는다.
+    # 앱을 띄워 둔 채로는 다른 프로그램이 GPU 를 못 쓴다는 뜻이다.
+    mb = free_gpu_cache()
+    freed = f" GPU {mb:.0f}MB 반환." if mb else ""
+    log(f"   모델을 메모리에서 놓았다.{freed}{(' ' + why) if why else ''}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1037,6 +1070,12 @@ def run_diarization(path: str, want: int, upd) -> list:
         return []
     finally:
         source = None
+        # 파이프라인은 캐시에 남긴다. 돌려주는 것은 이번 판이 쓴 활성 메모리다.
+        # 이것을 안 하면 다음 항목의 전사가 GPU 메모리를 못 얻어 3배 느려진다.
+        # 실패 경로에서도 돌려준다 — 실패했다고 쥐고 있을 이유가 없다.
+        mb = free_gpu_cache()
+        if mb >= 256:
+            log(f"   화자 분리 뒤 GPU {mb:.0f}MB 를 돌려줬다")
 
     if hasattr(ann, "speaker_diarization"):     # 4.x 배타 출력 형태
         ann = ann.speaker_diarization

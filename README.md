@@ -139,7 +139,7 @@ python app.py --selftest            # 이름·용어 교정 규칙 자가 시험
 ```powershell
 python app.py --selftest        # 이름·용어 교정 16건
 python tests/state_test.py      # 종료 상태·기기 대체·GPU 탐침 76건
-python tests/queue_test.py      # 대기열·이력·설정·모델 캐시 52건
+python tests/queue_test.py      # 대기열·이력·설정·캐시·GPU 반환 54건
 python tests/screen_test.py     # 화면과 백엔드의 접합면 54건
 python tests/setup_test.py      # 설치기 갈래 56건
 ```
